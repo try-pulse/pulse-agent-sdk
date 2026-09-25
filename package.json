@@ -1,0 +1,32 @@
+{
+  "name": "pulse-agent-sdk-workspace",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/sdk",
+    "examples/scout"
+  ],
+  "scripts": {
+    "generate": "node scripts/generate-types.mjs",
+    "types:check": "node scripts/check-sdk-spec.mjs && node scripts/generate-types.mjs --check",
+    "specs:sync": "node scripts/sync-specs.mjs",
+    "manifests:check": "node scripts/validate-manifests.mjs",
+    "package:smoke": "node scripts/package-smoke.mjs",
+    "build": "npm run build --workspaces",
+    "test": "node --test scripts/test/*.test.mjs && npm test --workspace @pulse/agent-sdk && npm test --workspace @pulse/agent-sdk-example-scout && npm run manifests:check",
+    "check": "npm run types:check && npm test",
+    "start:scout": "npm start --workspace @pulse/agent-sdk-example-scout"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "js-yaml": "^4.3.2",
+    "openapi-typescript": "^7.4.4",
+    "typescript": "^5.7.2"
+  }
+}

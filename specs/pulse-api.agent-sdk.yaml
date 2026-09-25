@@ -1,0 +1,4045 @@
+openapi: 3.0.3
+info:
+  title: Pulse Agent SDK API
+  version: 1.0.0
+  description: The pulse-api operations and webhook types used by @pulse/agent-sdk.
+servers:
+  - url: https://api.trypulse.tech/api/v1
+security:
+  - BearerAuth: []
+paths:
+  /auth/me:
+    get:
+      tags:
+        - Authentication
+      summary: Get current user profile
+      description: >-
+        Get the current authenticated user's profile information. An identity route: it needs no OAuth scope and answers
+        for any valid token, including an agent app token, where it returns `user.user_kind: application`,
+        `user.agent_kind: app`, `app{id, name}` and `installation_id`. Agent apps use it the way Linear agents use
+        `viewer`.
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /oauth/authorize:
+    get:
+      tags:
+        - OAuth
+        - Authentication
+      summary: OAuth2 authorization redirect
+      description: >
+        Starts the authorization code flow. Validates `client_id`, `redirect_uri`, and `scope`, then returns
+
+        HTTP 302 to the configured login/consent UX. When the caller supplies a Bearer access token compatible with
+        Pulse auth,
+
+        a logged-in user may skip redundant login screens.
+
+
+        PKCE with `S256` is required for every client: a request without `code_challenge`, or with any other
+
+        `code_challenge_method`, is refused with `invalid_request`.
+
+
+        **Installing an agent app (`actor=app`).** An agent app's client sends `actor=app` to be installed into a
+
+        workspace rather than to act for the person consenting. The consent screen is then admin-only: the person
+
+        must be an owner or admin of the app's developer workspace (the only workspace a v1 private app installs
+
+        into) and chooses the teams the app covers. The grant belongs to the app's own application user, and the
+
+        tokens act as the app (see `POST /oauth/token`). Refusals redirect to `redirect_uri` with:
+
+        - `error=unsupported_actor`: `actor=app` from a client that is not an agent app, or agent apps are not
+          enabled for the workspace.
+        - `error=invalid_scope`: `admin` was requested with `actor=app`, or an `app:*` scope without `actor=app`.
+      operationId: oauthAuthorize
+      security: []
+      parameters:
+        - name: response_type
+          in: query
+          required: true
+          schema:
+            type: string
+            example: code
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: redirect_uri
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+        - name: scope
+          in: query
+          description: >-
+            Scopes separated by spaces or commas (see `OAuthScope`). Agent apps usually request
+            `read,write,app:assignable,app:mentionable`.
+          schema:
+            type: string
+            example: read,write,app:assignable,app:mentionable
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: code_challenge
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - S256
+        - name: actor
+          in: query
+          required: false
+          description: >-
+            `user` (default): the token acts for the person who consents. `app`: install an agent app; the token acts as
+            the app itself.
+          schema:
+            type: string
+            enum:
+              - user
+              - app
+            default: user
+      responses:
+        '302':
+          description: >-
+            Redirect to login, consent UI, or `redirect_uri` with `code` or `error` (`invalid_request`, `invalid_scope`,
+            `unsupported_actor`, `access_denied`).
+        '400':
+          description: >-
+            OAuth error before a redirect is possible (`invalid_client`, `invalid_request` for an unregistered
+            `redirect_uri`, …)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthError'
+  /oauth/token:
+    post:
+      tags:
+        - OAuth
+      summary: OAuth2 token endpoint
+      description: |
+        Issues access and refresh tokens (authorization_code and refresh_token grants). The body is
+        form-encoded. A confidential client authenticates with HTTP Basic (`client_secret_basic`) or with
+        `client_id` and `client_secret` in the form body (`client_secret_post`); the discovery document at
+        `https://api.trypulse.tech/.well-known/oauth-authorization-server` lists both.
+
+        Refresh tokens rotate: every refresh returns a new `refresh_token` and the old one stops working after a
+        short grace period.
+
+        **Agent app tokens.** For a grant made with `actor=app`, the tokens act as the app's application user in
+        the installation's workspace, limited to the teams the installation covers and to the granted scopes.
+        The access token lasts 3600 seconds (`OAUTH_APP_ACCESS_TOKEN_DURATION`). The response adds `actor`,
+        `installation_id`, `app_user_id` and `workspace_id`; store the tokens per `installation_id`. After the app
+        is uninstalled, a refresh answers `invalid_grant` and access tokens get `401 INSTALLATION_REVOKED`.
+        App tokens are refused by `POST /auth/refresh` and by every session-only route (`SESSION_ONLY_ROUTE`).
+      operationId: oauthToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - grant_type
+              properties:
+                grant_type:
+                  type: string
+                  enum:
+                    - authorization_code
+                    - refresh_token
+                client_id:
+                  type: string
+                  description: Required unless the client authenticates with HTTP Basic.
+                client_secret:
+                  type: string
+                  description: '`client_secret_post`. Omit when sending HTTP Basic credentials.'
+                code:
+                  type: string
+                  description: Authorization code (authorization_code grant)
+                redirect_uri:
+                  type: string
+                code_verifier:
+                  type: string
+                  description: PKCE verifier
+                refresh_token:
+                  type: string
+                  description: Existing refresh token (refresh_token grant)
+      responses:
+        '200':
+          description: Token response (OAuth2-style)
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - access_token
+                  - token_type
+                  - expires_in
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    example: Bearer
+                  expires_in:
+                    type: integer
+                    description: Seconds. 3600 for agent app tokens.
+                    example: 3600
+                  refresh_token:
+                    type: string
+                    description: Rotates on every refresh.
+                  scope:
+                    type: string
+                    description: The granted scopes, space-separated.
+                    example: read write app:assignable app:mentionable
+                  actor:
+                    type: string
+                    enum:
+                      - user
+                      - app
+                    description: '`app` for an agent app installation.'
+                  installation_id:
+                    type: string
+                    description: Agent app tokens only. The installation this token belongs to.
+                  app_user_id:
+                    type: string
+                    description: Agent app tokens only. The app's user id in the workspace.
+                  workspace_id:
+                    type: string
+                    description: Agent app tokens only. Send it as `X-Workspace-ID` on every call.
+              example:
+                access_token: eyJhbGciOi...
+                token_type: Bearer
+                expires_in: 3600
+                refresh_token: prt_4f1c...
+                scope: read write app:assignable app:mentionable
+                actor: app
+                installation_id: 6ab5a2d134765b14d76a6b10
+                app_user_id: 6ab5a2d134765b14d76a6b12
+                workspace_id: 6a34cfb024a3b4ed28806e3b
+        '400':
+          description: OAuth error envelope (`invalid_grant`, `invalid_client`, `invalid_request`, …)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthError'
+  /oauth/revoke:
+    post:
+      tags:
+        - OAuth
+      summary: Revoke OAuth token (RFC7009 subset)
+      description: Best-effort token revocation — always responds 200.
+      operationId: oauthRevoke
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                client_id:
+                  type: string
+                token:
+                  type: string
+                token_type_hint:
+                  type: string
+      responses:
+        '200':
+          description: Revoked (or silently ignored invalid token).
+  /issues/{id}:
+    get:
+      tags:
+        - Issues
+      summary: Get issue by ID
+      description: >
+        Get a specific issue by ID with full enriched data including linked request and its key results.
+
+
+        **Enrichment**: Includes parent issue info (for sub-issues) and progress tracking (for parent issues with
+        sub-tasks).
+      operationId: getIssueById
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Issue details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+        - Issues
+      summary: Update issue
+      description: >
+        Update issue with partial updates including the ability to link/unlink requests.
+
+
+        **Progress updates**: When updating a sub-task's status, the parent issue's progress is automatically
+        recalculated via the event system (eventually consistent, ~50-200ms delay).
+
+
+        **Agent app tokens**: `status` may only change to `in_progress` or `qa` (otherwise
+
+        `403 APP_STATUS_FORBIDDEN`), and `delegate_id` may not be set, changed or cleared
+
+        (`400 INVALID_DELEGATE`, reason `app_actor`). Needs `write`.
+      operationId: updateIssue
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIssueRequest'
+      responses:
+        '200':
+          description: Issue updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '400':
+          $ref: '#/components/responses/IssueWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/IssueWriteForbidden'
+        '404':
+          description: The issue does not exist, or a label in `label_ids` does not exist (`LABEL_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: |
+            `label_ids` cannot be applied (`VALIDATION`): more than 10 labels, a repeated
+            label, a label from another team, a label for a different entity type, or an
+            archived label.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    AgentAppScope:
+      type: string
+      description: The scopes an agent app manifest may request. `admin` is not one of them.
+      enum:
+        - read
+        - write
+        - issues:create
+        - comments:create
+        - app:assignable
+        - app:mentionable
+    AgentSessionComment:
+      type: object
+      description: A comment of the session's thread before the session started, oldest first.
+      required:
+        - id
+        - body
+        - author
+        - created_at
+      properties:
+        id:
+          type: string
+        body:
+          type: string
+          description: Markdown.
+        author:
+          $ref: '#/components/schemas/AgentSessionPerson'
+        created_at:
+          type: string
+          format: date-time
+    AgentSessionEventCreatedData:
+      type: object
+      description: |
+        `AgentSessionEvent` / `created`. Answer the webhook within 5 seconds, then post a
+        first activity (or set an external URL) within 10 seconds, or the session shows
+        as unresponsive.
+
+        `prompt_context` is XML using Linear's tags (see the Agent Session API docs): an
+        `<issue identifier url>` with `<title>`, `<description>`, `<team>`, `<label>`,
+        `<project>` and `<parent-issue>`; `<primary-directive-thread comment-id>` and
+        `<other-thread comment-id>` holding `<comment author created-at>`; `<guidance>` with
+        `<guidance-rule origin="workspace">` then `<guidance-rule origin="team" team="KEY">`;
+        and `<repository-hint repository="group/project"/>` from the issue team's routing
+        hints. At most 64 KB: the oldest `<other-thread>` blocks go first, then the
+        description is truncated.
+      required:
+        - event_id
+        - agent_session
+        - previous_comments
+        - guidance
+        - prompt_context
+      properties:
+        event_id:
+          type: string
+          description: Stable across retries. Deduplicate on it.
+          example: ase_6ab5b0114f48187cbd3ce9a1_created
+        agent_session:
+          $ref: '#/components/schemas/AgentSession'
+        previous_comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentSessionComment'
+        guidance:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentSessionGuidance'
+        prompt_context:
+          type: string
+          maxLength: 65536
+    AgentSessionEventPromptedData:
+      type: object
+      description: '`AgentSessionEvent` / `prompted`.'
+      required:
+        - event_id
+        - agent_session
+        - agent_activity
+      properties:
+        event_id:
+          type: string
+          example: ase_6ab5b0114f48187cbd3ce9a1_act_9
+        agent_session:
+          $ref: '#/components/schemas/AgentSession'
+        agent_activity:
+          $ref: '#/components/schemas/PromptedActivity'
+    AgentSessionGuidance:
+      type: object
+      description: >-
+        One guidance rule sent to the app: the workspace's, then the issue team's. The team rule wins on conflict.
+        Global platform guidance and personal guidance are never sent.
+      required:
+        - origin
+        - body
+      properties:
+        origin:
+          type: string
+          enum:
+            - workspace
+            - team
+        team_id:
+          type: string
+          description: Present when `origin` is `team`.
+        body:
+          type: string
+          description: Markdown.
+    AppWebhookAction:
+      type: string
+      description: |
+        - `AgentSessionEvent`: `created` (a session was opened for the app) or `prompted`
+          (a human wrote in the session, or pressed Stop).
+        - `PermissionChange`: `teamAccessChanged`.
+        - `OAuthApp`: `revoked` (the app was uninstalled).
+        - `Issue`, `Comment`, `Project`: `create`, `update`, `remove`.
+        - `Ping`: `create`.
+      enum:
+        - created
+        - prompted
+        - teamAccessChanged
+        - revoked
+        - create
+        - update
+        - remove
+    AppWebhookEnvelope:
+      type: object
+      description: |
+        The JSON body of every app webhook delivery: the workspace webhook envelope v1 plus
+        `installation_id` and `app_user_id`. `actor` is the human who delegated, mentioned
+        or prompted for `AgentSessionEvent`, and `system` for `PermissionChange` and
+        `OAuthApp`.
+
+        `Ping` is the one exception: `POST /agent-apps/{app_id}/webhook/test` sends it for
+        the app itself, not for an installation, so it has no `installation_id` and no
+        `app_user_id` (both keys are absent), `workspace_id` is the app's developer
+        workspace, `actor` is the admin who sent the test, `url` is empty and `data` is
+        `AppWebhookPingData`. Every other `type` always carries both ids.
+
+        Delivery headers:
+        - `Content-Type: application/json; charset=utf-8`
+        - `User-Agent: Pulse-Webhook/1`
+        - `Pulse-Delivery`: stable per webhook and event, the same on every retry
+        - `Pulse-Event`: the envelope `type`, e.g. `AgentSessionEvent`
+        - `Pulse-Signature`: lowercase hex HMAC-SHA256 of the raw body with the webhook
+          secret (`pwhsec_…`), no `sha256=` prefix
+        - `Pulse-Timestamp`: Unix milliseconds of this attempt. **Not signed** — check the
+          body's `webhook_timestamp` instead.
+
+        The receiver answers any 2xx within 5 seconds; redirects are not followed. Failed
+        attempts retry after 1 minute, 1 hour and 6 hours (4 attempts); a webhook with no
+        success and at least 3 failures in 24 hours is disabled. Verify the signature over
+        the raw body, then reject a `webhook_timestamp` more than 60 seconds from your
+        clock, then deduplicate on `data.event_id` (a `Ping` has none and is never retried).
+      required:
+        - action
+        - type
+        - actor
+        - created_at
+        - data
+        - url
+        - workspace_id
+        - webhook_id
+        - webhook_timestamp
+      properties:
+        action:
+          $ref: '#/components/schemas/AppWebhookAction'
+        type:
+          $ref: '#/components/schemas/AppWebhookEventType'
+        actor:
+          $ref: '#/components/schemas/WebhookActor'
+        created_at:
+          type: string
+          format: date-time
+          description: When the event happened (UTC, three fractional digits). Identical on every retry.
+          example: '2026-09-25T09:12:03.120Z'
+        data:
+          oneOf:
+            - $ref: '#/components/schemas/AgentSessionEventCreatedData'
+            - $ref: '#/components/schemas/AgentSessionEventPromptedData'
+            - $ref: '#/components/schemas/PermissionChangeData'
+            - $ref: '#/components/schemas/OAuthAppRevokedData'
+            - $ref: '#/components/schemas/WebhookIssueData'
+            - $ref: '#/components/schemas/WebhookCommentData'
+            - $ref: '#/components/schemas/WebhookProjectData'
+            - $ref: '#/components/schemas/AppWebhookPingData'
+        updated_from:
+          type: object
+          additionalProperties: true
+          description: '`Issue` and `Project` `update` only, as for workspace webhooks.'
+        url:
+          type: string
+          description: The issue, comment or session in the Pulse app. Empty when it could not be built, and always for `Ping`.
+          example: https://app.trypulse.tech/pulse/issues/6ab5b0024f48187cbd3ce990
+        workspace_id:
+          type: string
+          description: The workspace the app is installed in; for `Ping`, the app's developer workspace.
+        webhook_id:
+          type: string
+          description: The app's webhook.
+        webhook_timestamp:
+          type: integer
+          format: int64
+          description: >-
+            Unix milliseconds of this attempt. Covered by the signature, unlike the `Pulse-Timestamp` header; check it
+            is within ±60 seconds. Changes on every retry.
+          example: 1790327523120
+        installation_id:
+          type: string
+          description: The installation the event belongs to. Key your token store on it. Present on every `type` except `Ping`.
+        app_user_id:
+          type: string
+          description: The app's user id in this workspace. Present on every `type` except `Ping`.
+    AppWebhookEventType:
+      type: string
+      description: |
+        The envelope `type`, also sent as `Pulse-Event`.
+
+        - Always delivered: `AgentSessionEvent`, `PermissionChange`, `OAuthApp`.
+        - Opt-in through the manifest `webhook.resource_types`, filtered to the
+          installation's teams: `Issue`, `Comment`, `Project` (same data shapes as
+          workspace webhooks).
+        - `Ping`: only sent by `POST /agent-apps/{app_id}/webhook/test`.
+      enum:
+        - AgentSessionEvent
+        - PermissionChange
+        - OAuthApp
+        - Issue
+        - Comment
+        - Project
+        - Ping
+    AppWebhookPingData:
+      type: object
+      description: >-
+        `Ping` / `create`, sent only by `POST /agent-apps/{app_id}/webhook/test`. The same `data` as a workspace webhook
+        `Ping`; an app webhook has no label of its own, so `label` is the app's name. It has no `event_id`: a test is
+        sent once and never retried.
+      required:
+        - webhook_id
+        - label
+      properties:
+        webhook_id:
+          type: string
+          description: The app's webhook, as in the envelope.
+        label:
+          type: string
+          description: The app's name.
+          example: Scout
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Error code
+          example: INVALID_REQUEST
+        message:
+          type: string
+          description: Human-readable error message
+          example: Invalid request format
+        details:
+          type: object
+          description: Additional error details
+          additionalProperties: true
+        conflict:
+          allOf:
+            - $ref: '#/components/schemas/Conflict'
+          description: >-
+            Present only on the small set of 409 responses that need to identify the conflicting resource, not just
+            describe it in `message` (e.g. a duplicate `external_reference` or an already-resolved request). Omitted on
+            every other error response, including most 409s.
+    Issue:
+      allOf:
+        - $ref: '#/components/schemas/IssueBasic'
+        - type: object
+          required:
+            - team_id
+            - reporter_id
+            - created_at
+            - updated_at
+          properties:
+            team_id:
+              $ref: '#/components/schemas/ObjectId'
+            project_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+            milestone_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: ID of the milestone this issue belongs to. Must belong to the same project as the issue.
+            cycle_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+            request_ids:
+              type: array
+              items:
+                $ref: '#/components/schemas/ObjectId'
+              description: IDs of requests (bug reports/feature requests) that spawned this issue.
+            reporter_id:
+              $ref: '#/components/schemas/ObjectId'
+            assignee_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: The human who owns the issue. Never an agent.
+            delegate_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: >-
+                The agent executing the issue. An agent a user created may be named here only by its owner; the
+                deployment agent may be named by anyone with access to the issue.
+            delegated_by:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: >-
+                The person the current delegated run is authorised as — whoever set this delegate, which is not
+                necessarily the assignee. It belongs to the current `delegation_revision` and is cleared with the
+                delegate. Absent on issues delegated before this field existed.
+            delegated_via_agent_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: >-
+                Set when an orchestrator agent made the current delegation under an orchestration grant: the
+                orchestrator. `delegated_by` is still the person who granted it. Cleared with the delegate, and by any
+                delegation a person makes.
+            delegation_grant_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: >-
+                The orchestration grant the current delegation was made under. Also an issue list filter
+                (`delegation_grant_id`, `eq`/`in`).
+            delegation_revision:
+              type: integer
+              format: int64
+              minimum: 0
+              example: 2
+              description: >-
+                Incremented on every delegate set, change or removal, and never on a write that leaves the delegate
+                unchanged. 0 for an issue that has never been delegated.
+            parent_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+            time_estimate:
+              type: integer
+              minimum: 1
+              maximum: 1000
+              nullable: true
+              example: 16
+              description: Time estimate, in the owning team's estimate scale
+            due_date:
+              allOf:
+                - $ref: '#/components/schemas/DateTime'
+                - nullable: true
+            completed_at:
+              allOf:
+                - $ref: '#/components/schemas/DateTime'
+                - nullable: true
+            blocks_ids:
+              type: array
+              items:
+                $ref: '#/components/schemas/ObjectId'
+            blocked_by_ids:
+              type: array
+              items:
+                $ref: '#/components/schemas/ObjectId'
+            labels:
+              type: array
+              items:
+                $ref: '#/components/schemas/CatalogLabel'
+            main_doc_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+            progress:
+              allOf:
+                - $ref: '#/components/schemas/IssueProgress'
+                - nullable: true
+              description: Progress tracking for parent issues with sub-tasks. Only present when the issue has sub-tasks.
+            development_summary:
+              allOf:
+                - $ref: '#/components/schemas/IssueDevelopmentSummary'
+                - nullable: true
+              description: >-
+                Returned by the issue list endpoints, and only when the issue has active development links. The
+                single-issue endpoint (GET /issues/{id}) always omits it, so absence here never means "this issue has no
+                links" — read GET /issues/{id}/development-links for that.
+            team:
+              $ref: '#/components/schemas/TeamBasic'
+            project:
+              allOf:
+                - type: object
+                  properties:
+                    id:
+                      $ref: '#/components/schemas/ObjectId'
+                    title:
+                      type: string
+                      example: User Management System
+                    status:
+                      $ref: '#/components/schemas/ProjectStatus'
+                - nullable: true
+            cycle:
+              allOf:
+                - type: object
+                  properties:
+                    id:
+                      $ref: '#/components/schemas/ObjectId'
+                    name:
+                      type: string
+                      example: Sprint 1
+                    status:
+                      type: string
+                      enum:
+                        - planned
+                        - active
+                        - completed
+                - nullable: true
+            milestone:
+              allOf:
+                - $ref: '#/components/schemas/Milestone'
+                - nullable: true
+              description: Enriched milestone object. Present when milestone_id is set.
+            requests:
+              type: array
+              items:
+                $ref: '#/components/schemas/Request'
+              description: Enriched request data for all linked requests.
+            reporter:
+              $ref: '#/components/schemas/UserBasic'
+            assignee:
+              allOf:
+                - $ref: '#/components/schemas/UserBasic'
+                - nullable: true
+            delegate:
+              allOf:
+                - $ref: '#/components/schemas/UserBasic'
+                - nullable: true
+              description: Enriched delegate agent. Present when delegate_id is set.
+            delegated_via_agent:
+              allOf:
+                - $ref: '#/components/schemas/UserBasic'
+                - nullable: true
+              description: Enriched orchestrator agent. Present when delegated_via_agent_id is set.
+            parent:
+              allOf:
+                - $ref: '#/components/schemas/IssueBasic'
+                - nullable: true
+            children:
+              type: array
+              items:
+                allOf:
+                  - $ref: '#/components/schemas/IssueBasic'
+                  - type: object
+                    properties:
+                      assignee:
+                        allOf:
+                          - $ref: '#/components/schemas/UserBasic'
+                          - nullable: true
+            blocks:
+              type: array
+              items:
+                allOf:
+                  - $ref: '#/components/schemas/IssueBasic'
+                  - type: object
+                    properties:
+                      assignee:
+                        allOf:
+                          - $ref: '#/components/schemas/UserBasic'
+                          - nullable: true
+            blocked_by:
+              type: array
+              items:
+                allOf:
+                  - $ref: '#/components/schemas/IssueBasic'
+                  - type: object
+                    properties:
+                      assignee:
+                        allOf:
+                          - $ref: '#/components/schemas/UserBasic'
+                          - nullable: true
+            content:
+              type: array
+              items:
+                $ref: '#/components/schemas/ContentBasic'
+            releases:
+              type: array
+              items:
+                $ref: '#/components/schemas/ReleaseResponse'
+              description: Enriched release objects linked to this issue.
+            main_doc:
+              allOf:
+                - $ref: '#/components/schemas/ContentBasic'
+                - nullable: true
+            grant_info:
+              allOf:
+                - $ref: '#/components/schemas/GrantInfo'
+                - nullable: true
+                - description: >-
+                    Present when the requesting user accessed this issue via an explicit share grant. Absent for team
+                    members accessing via normal team permissions.
+            sla:
+              allOf:
+                - $ref: '#/components/schemas/SLASummaryResponse'
+                - nullable: true
+                - description: >-
+                    Present when the issue has an active SLA assignment. Absent when SLA is disabled for the workspace
+                    or no rule matched.
+            agent_session:
+              allOf:
+                - $ref: '#/components/schemas/IssueAgentSessionResponse'
+                - description: >-
+                    The issue's CURRENT delegated agent run. Absent — never null, never an empty object — when the issue
+                    was never delegated, its agent was removed, or the current delegation revision runs nothing.
+            time_in_status:
+              allOf:
+                - $ref: '#/components/schemas/IssueTimeInStatus'
+                - nullable: true
+                - description: Same shape on list and detail reads. Absent when timing data is unavailable; never fails the read.
+            is_subscribed:
+              type: boolean
+              description: >
+                True when the current user has an explicit `subscribed` row. Absence of a row does not guarantee
+                silence—implicit/auto subscribers may still receive notifications until they unsubscribe. See
+                `SubscriptionMeta` in subscription.yaml.
+            subscriber_count:
+              type: integer
+              minimum: 0
+              description: Count of explicit `subscribed` rows for this issue (not implicit recipients).
+            created_at:
+              $ref: '#/components/schemas/DateTime'
+            updated_at:
+              $ref: '#/components/schemas/DateTime'
+    IssueStatus:
+      type: string
+      enum:
+        - backlog
+        - todo
+        - in_progress
+        - qa
+        - release
+        - done
+      description: Issue status
+    MeResponse:
+      type: object
+      description: >-
+        The caller's own identity. Needs no OAuth scope, and answers for any valid agent app token. For an agent app
+        token, `user.user_kind` is `application`, `user.agent_kind` is `app`, and `app` and `installation_id` are set.
+      required:
+        - user
+      properties:
+        user:
+          $ref: '#/components/schemas/UserBasic'
+        app:
+          type: object
+          description: Agent app tokens only. The app the token belongs to.
+          required:
+            - id
+            - name
+          properties:
+            id:
+              type: string
+              example: 6ab5a1c04f48187cbd3ce901
+            name:
+              type: string
+              example: Scout
+        installation_id:
+          type: string
+          description: Agent app tokens only. The installation the token belongs to.
+          example: 6ab5a2d134765b14d76a6b10
+        default_home_view:
+          description: >-
+            The caller's resolved default home view for the scoped workspace. Omitted if it could not be resolved. Both
+            the user and workspace tiers are stored per workspace, so this resolves to the global default (`source:
+            global`, `user` and `workspace` both null) unless the request pins one workspace — send `X-Workspace-ID` to
+            get the caller's real default. A request without that header resolves to a workspace only when the caller
+            belongs to exactly one.
+          allOf:
+            - $ref: '#/components/schemas/HomeViewResponse'
+        preferences:
+          description: >-
+            The caller's preference documents, exactly as `GET /me/preferences` returns them: the `user` scope always,
+            and the `workspace` scope when the request pins a workspace via `X-Workspace-ID` (null otherwise). Omitted
+            if they could not be loaded. Embedded so a client boots with its preferences at no extra request.
+          allOf:
+            - $ref: '#/components/schemas/PreferencesResponse'
+    OAuthAppRevokedData:
+      type: object
+      description: >-
+        `OAuthApp` / `revoked`. The app was uninstalled: its tokens stop working, its delegations are released and its
+        sessions end with `end_reason: uninstalled`. Delivered even though the installation is no longer active. Drop
+        the stored tokens.
+      required:
+        - event_id
+        - installation_id
+        - app_id
+      properties:
+        event_id:
+          type: string
+        installation_id:
+          type: string
+        app_id:
+          type: string
+    OAuthError:
+      type: object
+      description: >-
+        RFC 6749 error shape used by the OAuth endpoints. `insufficient_scope` never appears here; it is sent only in
+        `WWW-Authenticate` on a `403 INSUFFICIENT_SCOPE` from an API route.
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: >-
+            `invalid_request`, `invalid_client`, `invalid_grant`, `invalid_scope`, `unauthorized_client`,
+            `unsupported_grant_type`, `access_denied`, or `unsupported_actor` (`actor=app` from a client that is not an
+            agent app, or agent apps are off for the workspace).
+          example: unsupported_actor
+        error_description:
+          type: string
+    OAuthScope:
+      type: string
+      description: |
+        A scope an OAuth client may request. A scope string separates scopes with spaces
+        or commas (`read,write,app:assignable` and `read write app:assignable` are equal).
+
+        - `read`: read what the token's user can read. A grant with an empty scope is `read`.
+        - `write`: create, change and delete. Implies `issues:create` and `comments:create`.
+        - `issues:create`: `POST /issues` only.
+        - `comments:create`: create comments and replies only.
+        - `app:assignable`: agent apps only. The app can be delegated issues.
+        - `app:mentionable`: agent apps only. The app can be @mentioned in comments.
+        - `openid`, `profile`, `offline_access`: legacy identity scopes; they grant no data access.
+        - `mcp:read`, `mcp:write`: legacy; read as `read` and `write`.
+
+        `app:*` is accepted only with `actor=app` from a client that is an agent app.
+        `admin` is never granted to an agent app. Identity routes (`GET /auth/me`,
+        `GET /workspaces/me`, `GET /teams/select`) need no scope.
+      enum:
+        - read
+        - write
+        - issues:create
+        - comments:create
+        - app:assignable
+        - app:mentionable
+        - openid
+        - profile
+        - offline_access
+        - mcp:read
+        - mcp:write
+      example: app:assignable
+    PermissionChangeData:
+      type: object
+      description: >-
+        `PermissionChange` / `teamAccessChanged`. An admin changed which teams the installation covers. Sessions on
+        removed teams end with `end_reason: team_removed`.
+      required:
+        - event_id
+        - installation_id
+        - all_teams
+        - team_ids
+        - added_team_ids
+        - removed_team_ids
+      properties:
+        event_id:
+          type: string
+        installation_id:
+          type: string
+        all_teams:
+          type: boolean
+        team_ids:
+          type: array
+          items:
+            type: string
+          description: The covered teams now. Empty when `all_teams` is true.
+        added_team_ids:
+          type: array
+          items:
+            type: string
+        removed_team_ids:
+          type: array
+          items:
+            type: string
+    PromptedActivity:
+      type: object
+      description: >-
+        The human's message. `signal: stop` means the human pressed Stop: do nothing further and post a final `response`
+        or `error`. For an answer to a `select` elicitation, `content.body` is the chosen option's `value`, or free
+        text.
+      required:
+        - id
+        - content
+        - author
+        - created_at
+      properties:
+        id:
+          type: string
+        content:
+          type: object
+          required:
+            - type
+            - body
+          properties:
+            type:
+              type: string
+              enum:
+                - prompt
+            body:
+              type: string
+              description: Markdown.
+        signal:
+          type: string
+          enum:
+            - stop
+        author:
+          $ref: '#/components/schemas/AgentSessionPerson'
+        created_at:
+          type: string
+          format: date-time
+    UpdateIssueRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 2
+          maxLength: 200
+          example: Fix user registration validation - Updated
+        description:
+          type: string
+          maxLength: 500
+          example: Updated description with more details
+        status:
+          $ref: '#/components/schemas/IssueStatus'
+        priority:
+          $ref: '#/components/schemas/IssuePriority'
+        project_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: |
+            Link or unlink a project. Set to `null` (or `""`) to unlink; omit to leave unchanged.
+            Unlinking or changing the project also clears `milestone_id`.
+            Rejected on a sub-issue, and on an issue that `parent_id` makes one in the same
+            request: a sub-issue's project is its parent's. Unlinking is rejected for the same
+            reason as linking. Sending `parent_id: null` in the same request lifts that, since
+            what remains is a top-level issue.
+        assignee_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: |
+            Assign or unassign the issue. Set to `null` to unassign; omit to leave unchanged.
+            Must be a person. Unassigning a delegated issue requires clearing `delegate_id`
+            in the same request (DELEGATION_REQUIRES_ASSIGNEE).
+        delegate_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: |
+            Delegate the issue to an agent, replace its agent, or set to `null` to remove
+            the agent; omit to leave unchanged. The human assignee is never changed, except
+            that delegating an unassigned issue assigns the caller; a caller who could not be
+            assigned (an agent, or a person outside the issue's team) gets
+            DELEGATION_REQUIRES_ASSIGNEE and must set `assignee_id` to a team member in the
+            same request. Compared and stored lowercased, so the same agent in another case
+            is not a change. Must be an active agent
+            with access to the issue's team; personal issues cannot be delegated. A refusal
+            answers 400 `INVALID_DELEGATE` with `details.reason` (see InvalidDelegateDetails).
+            An agent app delegate also needs an active installation covering the issue's team,
+            `app:assignable` and an enabled webhook. An agent app token may not set, change or
+            clear this field (`app_actor`); undelegating an app ends its session with
+            `end_reason: undelegated`.
+        time_estimate:
+          allOf:
+            - type: integer
+              minimum: 0
+              maximum: 1000
+            - nullable: true
+          description: |
+            Set the issue's estimate. When the team has estimates enabled, the value must be one
+            of the team's scale values (0 only if the team allows zero). Set to `null` to clear
+            the estimate; omit to leave unchanged.
+          example: 8
+        due_date:
+          $ref: '#/components/schemas/DateTime'
+        label_ids:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/ObjectId'
+        milestone_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: |
+            Link or unlink a milestone. The milestone must belong to the same project as the issue.
+            Set to `null` to unlink. Removing the issue's project also clears this field automatically.
+            Rejected on a sub-issue, and on an issue that `parent_id` makes one in the same request,
+            under the same rule as `project_id`.
+        cycle_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: |
+            Link or unlink a cycle. The cycle must belong to the same team as the issue.
+            Set to `null` to unlink. Omit to leave unchanged.
+            Rejected on a sub-issue, and on an issue that `parent_id` makes one in the same request,
+            under the same rule as `project_id`.
+        request_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectId'
+          description: Full replacement of linked request IDs. Omit to leave unchanged; send an empty array to unlink all.
+        parent_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: |
+            Link or unlink a parent issue (convert to/from sub-issue).
+            Set to `null` to detach from the parent. Omit to leave unchanged.
+            Attaching a parent overwrites `project_id`, `milestone_id` and `cycle_id` with the
+            parent's values, clearing each one the parent does not have; the sub-issue's own
+            sub-tasks then follow whenever the parent changes any of the three. Detaching leaves
+            the inherited values in place — send them in the same request to change them.
+        release_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectId'
+          maxItems: 20
+          description: IDs of releases to link. Sub-issues may link to releases independently of their parent.
+          example:
+            - 507f1f77bcf86cd799439011
+    WebhookActor:
+      type: object
+      nullable: true
+      description: >
+        Who made the change. Null when the user no longer exists or the event has no actor. `system` is a write no
+        signed-in user made; it has an empty `id` and `name`. Under agent delegation an Issue or Project event names the
+        delegating user, not the agent.
+      required:
+        - id
+        - type
+        - name
+      properties:
+        id:
+          type: string
+          example: 68cab92a5020377746176588
+        type:
+          type: string
+          enum:
+            - user
+            - application
+            - system
+        name:
+          type: string
+          example: Alireza Attari
+    WebhookCommentData:
+      type: object
+      description: A comment on an issue or project. Internal comments are never delivered.
+      required:
+        - id
+        - text
+        - author_id
+        - target_type
+        - target_id
+        - parent_comment_id
+        - is_resolved
+        - mentioned_user_ids
+        - edited_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        author_id:
+          type: string
+          nullable: true
+        target_type:
+          type: string
+          enum:
+            - issue
+            - project
+        target_id:
+          type: string
+        parent_comment_id:
+          type: string
+          nullable: true
+        is_resolved:
+          type: boolean
+        mentioned_user_ids:
+          type: array
+          items:
+            type: string
+        edited_at:
+          allOf:
+            - $ref: '#/components/schemas/WebhookTimestamp'
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/WebhookTimestamp'
+        updated_at:
+          $ref: '#/components/schemas/WebhookTimestamp'
+    WebhookIssueData:
+      type: object
+      required:
+        - id
+        - code
+        - title
+        - description
+        - status
+        - priority
+        - type
+        - team_id
+        - project_id
+        - milestone_id
+        - cycle_id
+        - parent_id
+        - reporter_id
+        - assignee_id
+        - delegate_id
+        - delegation_revision
+        - label_ids
+        - blocks_ids
+        - blocked_by_ids
+        - time_estimate
+        - due_date
+        - completed_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        code:
+          type: string
+          example: PUL-13
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          example: in_progress
+        priority:
+          type: string
+          example: high
+        type:
+          type: string
+          example: feature
+        team_id:
+          type: string
+          nullable: true
+        project_id:
+          type: string
+          nullable: true
+        milestone_id:
+          type: string
+          nullable: true
+        cycle_id:
+          type: string
+          nullable: true
+        parent_id:
+          type: string
+          nullable: true
+        reporter_id:
+          type: string
+          nullable: true
+        assignee_id:
+          type: string
+          nullable: true
+        delegate_id:
+          type: string
+          nullable: true
+          description: The agent the issue is delegated to; the human owner stays in assignee_id.
+        delegation_revision:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Increments on every delegate change; 0 for an issue never delegated.
+        label_ids:
+          type: array
+          items:
+            type: string
+        blocks_ids:
+          type: array
+          items:
+            type: string
+        blocked_by_ids:
+          type: array
+          items:
+            type: string
+        time_estimate:
+          type: number
+          nullable: true
+          description: Hours.
+        due_date:
+          allOf:
+            - $ref: '#/components/schemas/WebhookTimestamp'
+          nullable: true
+        completed_at:
+          allOf:
+            - $ref: '#/components/schemas/WebhookTimestamp'
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/WebhookTimestamp'
+        updated_at:
+          $ref: '#/components/schemas/WebhookTimestamp'
+    WebhookProjectData:
+      type: object
+      required:
+        - id
+        - title
+        - description
+        - status
+        - priority
+        - health_status
+        - owner_id
+        - lead_id
+        - member_ids
+        - team_ids
+        - initiative_id
+        - initiative_ids
+        - label_ids
+        - start_date
+        - target_date
+        - completed_at
+        - progress
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          example: in_progress
+        priority:
+          type: string
+          example: medium
+        health_status:
+          type: string
+          nullable: true
+          example: on_track
+        owner_id:
+          type: string
+          nullable: true
+        lead_id:
+          type: string
+          nullable: true
+        member_ids:
+          type: array
+          items:
+            type: string
+        team_ids:
+          type: array
+          items:
+            type: string
+        initiative_id:
+          type: string
+          nullable: true
+          description: Legacy copy of the first `initiative_ids` entry.
+        initiative_ids:
+          type: array
+          items:
+            type: string
+        label_ids:
+          type: array
+          items:
+            type: string
+        start_date:
+          allOf:
+            - $ref: '#/components/schemas/WebhookTimestamp'
+          nullable: true
+        target_date:
+          allOf:
+            - $ref: '#/components/schemas/WebhookTimestamp'
+          nullable: true
+        completed_at:
+          allOf:
+            - $ref: '#/components/schemas/WebhookTimestamp'
+          nullable: true
+        progress:
+          type: number
+          nullable: true
+          example: 42
+        created_at:
+          $ref: '#/components/schemas/WebhookTimestamp'
+        updated_at:
+          $ref: '#/components/schemas/WebhookTimestamp'
+    InvalidDelegateDetails:
+      type: object
+      description: |
+        `details` of a 400 `INVALID_DELEGATE` response. `message` is localized; `reason` is
+        stable in every locale, so clients key their own copy on it. A create an
+        orchestrator agent makes outside its orchestration grant with no delegate
+        involved answers 400 `ORCHESTRATION_GRANT_REFUSED` with the same details.
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          enum:
+            - not_agent
+            - not_found
+            - not_active
+            - no_team_access
+            - personal_issue
+            - agent_actor
+            - outside_grant_scope
+            - delegate_not_in_grant
+            - self_delegation
+            - not_grant_delegation
+            - grant_limit_reached
+            - app_actor
+            - app_not_installed_for_team
+            - app_missing_scope
+            - app_webhook_disabled
+          description: |
+            - `not_agent`: the delegate is not an agent.
+            - `not_found`: the agent has no user record.
+            - `not_active`: the agent is not active.
+            - `no_team_access`: the agent has no access to the issue's team.
+            - `personal_issue`: personal issues cannot be delegated.
+            - `agent_actor`: the write was made by an agent (a delegated agent token, or an
+              agent authenticated as itself) that holds no live orchestration grant for it;
+              outside a grant only a person may set, change or clear a delegate.
+            - `outside_grant_scope`: an orchestrator's write under its grant targets an issue
+              outside the grant's project or milestone, the grant's anchor, or a personal issue.
+            - `delegate_not_in_grant`: the delegate is not one of the grant's workers.
+            - `self_delegation`: an orchestrator named itself.
+            - `not_grant_delegation`: the delegation being changed or cleared was not made
+              under this grant (a person's delegation is never the orchestrator's to change).
+            - `grant_limit_reached`: a cap of the grant is used up; `limit` names it.
+            - `app_actor`: the write was made by an agent app token. Agent apps cannot set,
+              change or clear a delegate — not even their own.
+            - `app_not_installed_for_team`: the delegate is an agent app whose active
+              installation does not cover the issue's team.
+            - `app_missing_scope`: the delegate is an agent app installed without
+              `app:assignable`.
+            - `app_webhook_disabled`: the delegate is an agent app whose webhook is disabled,
+              so it could not receive the session.
+          example: no_team_access
+        limit:
+          type: string
+          enum:
+            - delegated_issues
+            - delegation_writes
+            - issues_created
+          description: Set with `grant_limit_reached`.
+    ObjectId:
+      type: string
+      pattern: ^[0-9a-fA-F]{24}$
+      description: MongoDB ObjectID
+      example: 60f7b3b3b3b3b3b3b3b3b3b3
+    WebhookTimestamp:
+      type: string
+      format: date-time
+      description: A UTC instant with exactly three fractional digits.
+      example: '2026-09-17T10:00:00.000Z'
+    DateTime:
+      type: string
+      format: date-time
+      description: ISO 8601 date-time
+      example: '2024-01-15T10:30:00Z'
+    IssuePriority:
+      type: string
+      enum:
+        - no_priority
+        - urgent
+        - high
+        - medium
+        - low
+      description: Issue priority level
+    AgentSessionPerson:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: Sara Ahmadi
+    PreferencesResponse:
+      type: object
+      description: Both scopes in one read.
+      properties:
+        user:
+          $ref: '#/components/schemas/PreferencesDocument'
+        workspace:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PreferencesDocument'
+          description: Null when the request resolves no workspace.
+      required:
+        - user
+        - workspace
+    PreferencesDocument:
+      type: object
+      description: |
+        One scope's complete document. A person with nothing stored receives the
+        empty default (`persisted: false`, `rev: 0`, no values), so a client never
+        has to merge the response with anything. Keys are opaque to the server: the
+        client registry owns what a key means, its schema and its default.
+      properties:
+        scope:
+          $ref: '#/components/schemas/PreferenceScope'
+        version:
+          type: integer
+          description: Shape of the stored document. Currently always `1`.
+        rev:
+          type: integer
+          format: int64
+          description: Incremented by one on every write to this scope. `0` until the first write.
+        persisted:
+          type: boolean
+          description: |
+            False when nothing is stored and this is the empty default. A client runs
+            its one-time import of local state only while this is false.
+        values:
+          type: object
+          description: |
+            Per-key entries. Keys are 1-64 characters matching
+            `^[a-z0-9][a-z0-9._-]{0,63}$`; the stored document holds at most 256 of
+            them and at most 256 KiB of keys plus values.
+          maxProperties: 256
+          additionalProperties:
+            $ref: '#/components/schemas/PreferenceEntry'
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null while `persisted` is false.
+      required:
+        - scope
+        - version
+        - rev
+        - persisted
+        - values
+    PreferenceEntry:
+      type: object
+      description: One stored value with the moment and the client that last wrote it.
+      properties:
+        v:
+          description: >-
+            The client's JSON value, returned semantically identical to what was written (whitespace removed). At most 8
+            KiB.
+        at:
+          type: string
+          format: date-time
+          description: Server time of the last write to this key. Newest wins per key across devices.
+        by:
+          $ref: '#/components/schemas/PreferencePlatform'
+      required:
+        - v
+        - at
+    PreferencePlatform:
+      type: string
+      description: The client that wrote an entry. Recorded per key, never interpreted by the server.
+      enum:
+        - web
+        - pwa
+        - macos
+        - ios
+    PreferenceScope:
+      type: string
+      description: |
+        Which document a write lands in. `user` follows the account to every
+        workspace, device and client; `workspace` is one account inside the
+        workspace pinned by `X-Workspace-ID`.
+      enum:
+        - user
+        - workspace
+    HomeViewResponse:
+      type: object
+      description: |
+        The resolved default home view plus the raw per-tier values. `effective` is
+        resolved as user override, then workspace default, then the global constant
+        (`my_issues`).
+      properties:
+        effective:
+          $ref: '#/components/schemas/HomeViewSelection'
+        source:
+          type: string
+          enum:
+            - user
+            - workspace
+            - global
+        user:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/HomeViewSelection'
+          description: The raw user override, or null when unset.
+        workspace:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/HomeViewSelection'
+          description: The raw workspace default, or null when unset.
+        global:
+          $ref: '#/components/schemas/HomeViewSelection'
+    HomeViewSelection:
+      type: object
+      properties:
+        type:
+          $ref: '#/components/schemas/HomeViewType'
+        favorite_id:
+          type: string
+          description: Present only when `type` is `favorite`.
+      required:
+        - type
+    HomeViewType:
+      type: string
+      description: |
+        Fixed home-view code. All values are constant except `favorite`, which pairs
+        with a `favorite_id` pointing at one of the caller's favorites.
+      enum:
+        - inbox
+        - my_issues
+        - all_issues
+        - active_issues
+        - current_cycle
+        - projects
+        - initiatives
+        - favorite
+    UserBasic:
+      type: object
+      required:
+        - id
+        - email
+        - role
+        - status
+        - team_memberships
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        role:
+          type: string
+          enum:
+            - admin
+            - user
+          example: user
+        status:
+          type: string
+          enum:
+            - active
+            - blocked
+            - pending
+          example: active
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Public URL to user's avatar image
+          example: https://storage.example.com/avatars/user123/1234567890.jpg
+        avatar_urls:
+          $ref: '#/components/schemas/AvatarURLSet'
+        avatar_status:
+          type: string
+          enum:
+            - pending
+            - processing
+            - processed
+          nullable: true
+          description: >-
+            AI avatar-processing status. Absent/null for users who have never uploaded an avatar. "pending"/"processing"
+            mean an AI-enhanced version is being generated in the background — poll this endpoint until it becomes
+            "processed", at which point avatar_url reflects the final image (or the original, if generation ultimately
+            failed after retries).
+          example: processed
+        team_memberships:
+          type: array
+          description: Array of team memberships
+          items:
+            $ref: '#/components/schemas/TeamMembership'
+          example:
+            - team_id: 60f7b3b3b3b3b3b3b3b3b3b4
+              team_role: manager
+        teams:
+          type: array
+          description: Enriched team data (not persisted, populated on read)
+          items:
+            $ref: '#/components/schemas/TeamBasic'
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+        email_verified:
+          type: boolean
+          description: Soft gate for self-serve registration. Existing (pre-onboarding) users are treated as verified.
+          example: true
+        email_verified_at:
+          $ref: '#/components/schemas/DateTime'
+          nullable: true
+        onboarding_completed:
+          type: boolean
+          description: Routing flag — false routes the frontend to /welcome. Existing users are treated as completed.
+          example: true
+        onboarding_completed_at:
+          $ref: '#/components/schemas/DateTime'
+          nullable: true
+        default_workspace_id:
+          type: string
+          nullable: true
+          description: Set on first self-serve workspace creation.
+        user_kind:
+          type: string
+          enum:
+            - human
+            - application
+          description: >-
+            `application` marks an agent account (Pulse Agent, a personal agent or an installed agent app). Always
+            present on the wire. Branch on this, never on name or email.
+        agent_kind:
+          allOf:
+            - $ref: '#/components/schemas/AgentKind'
+          description: >-
+            Present only when `user_kind` is `application`. On an issue's `delegate` it tells a Pulse Agent, a personal
+            agent and an installed agent app apart.
+    AgentKind:
+      type: string
+      description: |
+        Which kind of agent an application user is. Present on agent accounts only.
+
+        - `deployment`: Pulse Agent, the deployment's own agent.
+        - `personal`: an agent a member created for themselves.
+        - `app`: an installed agent app.
+      enum:
+        - deployment
+        - personal
+        - app
+      example: app
+    TeamBasic:
+      type: object
+      required:
+        - id
+        - name
+        - icon_code
+        - icon_color
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+          example: Development Team
+        icon_code:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: ^[a-zA-Z0-9_-]+$
+          example: dev-icon
+        icon_color:
+          $ref: '#/components/schemas/HexColor'
+    HexColor:
+      type: string
+      pattern: ^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$
+      description: Hex color code
+      example: '#3498db'
+    TeamMembership:
+      type: object
+      required:
+        - team_id
+        - team_role
+      properties:
+        team_id:
+          $ref: '#/components/schemas/ObjectId'
+          description: Team ID
+          example: 60f7b3b3b3b3b3b3b3b3b3b4
+        team_role:
+          type: string
+          enum:
+            - manager
+            - member
+            - viewer
+            - qa
+          description: >-
+            Display-only projection of `role_id`: seeded Team Manager reads `manager`, Viewer `viewer`, QA `qa`, every
+            other role (including a custom one) `member`. Never an authority signal.
+          example: member
+        role_id:
+          type: string
+          description: The workspace_roles row (kind=team) this membership holds.
+        role_name:
+          type: string
+          description: Name of the assigned team role. Empty when the role could not be resolved.
+          example: Team Member
+    AvatarURLSet:
+      type: object
+      description: >-
+        Resized avatar variants produced on the fly by imgproxy. Each field is a signed URL to a downscaled square
+        version of the same avatar; the client picks the size that fits its rendering context. Omitted entirely when
+        imgproxy is not configured (in that case use avatar_url).
+      properties:
+        xs:
+          type: string
+          format: uri
+          description: 32×32 variant
+        s:
+          type: string
+          format: uri
+          description: 64×64 variant
+        m:
+          type: string
+          format: uri
+          description: 128×128 variant
+        l:
+          type: string
+          format: uri
+          description: 256×256 variant
+    IssueTimeInStatus:
+      type: object
+      description: >
+        Status timing derived from the issue's lifecycle facts. `status_durations_ms` is cumulative wall-clock time per
+        status across every visit, including re-entry after a backward move or a reopen; the current status's value also
+        includes its running visit through `calculated_at`. `current_status_entered_at` is the start of the current
+        uninterrupted visit only — its age is not the cumulative dwell for that status. Working-time calendars are not
+        applied. Omitted when no lifecycle fact exists yet or the fact has not caught up with the issue's current
+        status.
+      required:
+        - current_status
+        - current_status_entered_at
+        - calculated_at
+        - status_durations_ms
+      properties:
+        current_status:
+          $ref: '#/components/schemas/IssueStatus'
+        current_status_entered_at:
+          $ref: '#/components/schemas/DateTime'
+        calculated_at:
+          description: >-
+            Server time through which durations were calculated. Add the elapsed time since this instant to the current
+            status's duration to keep it advancing client-side.
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+        status_durations_ms:
+          type: object
+          description: >-
+            Cumulative milliseconds per status. The current status is always present; other statuses appear once the
+            issue has spent time in them.
+          additionalProperties:
+            type: integer
+            format: int64
+            minimum: 0
+          example:
+            todo: 86400000
+            in_progress: 5400000
+    IssueAgentSessionResponse:
+      type: object
+      description: |
+        The state of an issue's current delegated agent run (PUL-802), denormalized onto
+        the issue so a list renders it on first paint with no second service hop.
+
+        pulse-agent stays the system of record for the run itself. Its title, activities,
+        plan, failure reason and unread marker are deliberately NOT here: the last two are
+        per-viewer, and a per-viewer field cannot live on a shared cached document. Read
+        those from pulse-agent.
+
+        `finished` means the AGENT stopped working — never that the issue is done. The
+        issue's own workflow status is untouched by any of this.
+
+        A value outside this enum should be read as `pending`: new states may be added,
+        pulse-api first, and a deployed client must not break on one it has not shipped yet.
+      required:
+        - state
+        - revision
+        - attempt
+        - updated_at
+      properties:
+        state:
+          type: string
+          enum:
+            - pending
+            - working
+            - needs_input
+            - finished
+            - failed
+            - canceled
+          example: needs_input
+          description: |
+            - `pending`: delegated; the run has not started yet.
+            - `working`: the agent is running.
+            - `needs_input`: the run is blocked on a human.
+            - `finished`: the run ended on its own.
+            - `failed`: the run errored, or the start failed terminally.
+            - `canceled`: the run stopped without finishing — a human stopped it, it was
+              superseded, the delegate was removed mid-run, or the owning worker died.
+        session_id:
+          type: string
+          example: sess_01J9XYZ
+          description: Omitted for a run with no session yet, or one that failed before it had one.
+        revision:
+          type: integer
+          format: int64
+          minimum: 0
+          example: 7
+          description: >-
+            The issue's `delegation_revision` this run belongs to. Compare it with the issue's own `delegation_revision`
+            to tell the agent currently on the issue from a leftover of the one it replaced.
+        attempt:
+          type: integer
+          minimum: 0
+          example: 1
+          description: The run attempt within this delegation revision. A retry is a higher attempt.
+        updated_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - description: >-
+                When the state became true on pulse-agent — not when it was pushed, and not the issue's own
+                `updated_at`, which this write does not move.
+    SLASummaryResponse:
+      type: object
+      description: >
+        Compact SLA summary embedded on Request/Issue list and detail payloads. Batch-computed from the entity's active
+        assignment and open cycles; absent (field omitted) when the entity has no active SLA assignment.
+      properties:
+        item_state:
+          type: string
+          enum:
+            - ''
+            - active
+            - at_risk
+            - breached
+        source:
+          type: string
+          enum:
+            - automatic
+            - manual
+        rule_id:
+          type: string
+        rule_title:
+          type: string
+        match_explanation:
+          type: string
+        next_deadline_at:
+          type: string
+          format: date-time
+        open_target_count:
+          type: integer
+    GrantInfo:
+      type: object
+      description: Embedded in entity responses when the requesting user accessed the entity via an explicit share grant.
+      properties:
+        grant_id:
+          type: string
+          description: ID of the ResourceGrant document.
+          example: 64b1f2e3a4b5c6d7e8f90010
+        permission:
+          type: string
+          enum:
+            - view
+            - edit
+          description: The access level that was granted.
+        granted_at:
+          type: string
+          format: date-time
+          description: When the share was created.
+        granted_by_id:
+          type: string
+          description: User ID of the person who shared the entity.
+          example: 64b1f2e3a4b5c6d7e8f90002
+        granted_by_name:
+          type: string
+          description: Display name of the person who shared the entity (enriched).
+          example: Alice Smith
+        granted_by_avatar_url:
+          type: string
+          description: Signed URL for the sharer's avatar (enriched).
+          example: https://storage.example.com/avatars/alice.jpg?signature=...
+    ContentBasic:
+      type: object
+      required:
+        - id
+        - title
+        - type
+      properties:
+        id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+          description: >-
+            Stable identity of this content. For a document that is the ROOT of its version chain, which does not change
+            when the document is edited — store this, it is what `main_doc_id` and a directory membership's `content_id`
+            hold, and what every write endpoint expects. Links, images and videos are not versioned and simply carry
+            their own id. The one exception is the `/content/versions/...` responses, whose `id` addresses one version
+            row.
+        title:
+          type: string
+          minLength: 2
+          maxLength: 200
+          example: Project Specification
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: Main specification document
+        type:
+          $ref: '#/components/schemas/ContentType'
+        url:
+          type: string
+          format: uri
+          nullable: true
+          example: https://storage.example.com/signed-url
+        access_url:
+          type: string
+          format: uri
+          nullable: true
+          description: >-
+            Signed CDN/object-storage URL for anonymous download or embed. Use for share/download flows, not for
+            authenticated editor body load.
+          example: https://storage.example.com/signed-url
+        direct_access_url:
+          type: string
+          format: uri
+          nullable: true
+          description: >
+            Authenticated API URL for the current document body (`GET …/raw`). Requires the same Bearer token as other
+            API routes; may return 200 (body), 304 (ETag), or 302 (large file → signed CDN in Location). Omitted for
+            link content and when `APP_API_PUBLIC_URL` is unset.
+          example: https://api.trypulse.tech/api/v1/content/documents/674a1b2c3d4e5f678901234/raw
+        content_type:
+          type: string
+          nullable: true
+          example: application/pdf
+        file_size:
+          type: integer
+          minimum: 0
+          nullable: true
+          example: 320000
+        checksum:
+          type: string
+          nullable: true
+          example: abc123def456...
+        tags:
+          type: array
+          items:
+            type: string
+          example:
+            - spec
+            - main
+        is_public:
+          type: boolean
+          default: false
+          description: Currently has no effect on access control (reserved for future public sharing).
+          example: false
+        icon_code:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: ^[a-zA-Z0-9_-]+$
+          nullable: true
+          example: file-text
+        icon_color:
+          type: string
+          pattern: ^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$
+          nullable: true
+          example: '#fb923c'
+        version:
+          type: integer
+          minimum: 0
+          example: 1
+        is_current_version:
+          type: boolean
+          example: true
+        root_content_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: >-
+            Explicit chain metadata. Null on unversioned content and on a document that has never been edited; equal to
+            `id` afterwards on every response except the version-history ones. Kept for backward compatibility — prefer
+            `id`.
+        amended_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - nullable: true
+          description: >-
+            When this version was last overwritten in place by the editing session that created it. Distinct from
+            `updated_at`, which also moves on bookkeeping writes (version demotion, validation) and so cannot date an
+            edit. Present only on rows an autosaving editor amended; render `created_at`–`amended_at` as a range in
+            version history.
+        edit_session_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            The editing session that owns this version row. Lets a client recognise its own writes. Absent on rows
+            written without a session id.
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            When the content was deleted. Present only on a deleted row, which the documents list returns only with
+            `include_deleted=true`.
+    ContentType:
+      type: string
+      enum:
+        - link
+        - document
+        - image
+        - video
+      description: Type of content
+    ReleaseResponse:
+      type: object
+      required:
+        - id
+        - pipeline_id
+        - name
+        - stage_id
+        - issue_count
+        - completed_issue_count
+        - open_issue_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        pipeline_id:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+        version:
+          type: string
+          maxLength: 200
+          nullable: true
+        commit_sha:
+          allOf:
+            - $ref: '#/components/schemas/ReleaseCommitSha'
+          nullable: true
+        stage_id:
+          $ref: '#/components/schemas/ObjectId'
+        stage_type:
+          allOf:
+            - $ref: '#/components/schemas/ReleaseStageType'
+          description: Denormalized from the release stage; populated on create/update and by migration backfill.
+        target_date:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+          nullable: true
+        released_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+          nullable: true
+          readOnly: true
+          description: >-
+            When the release actually shipped, as opposed to `target_date`, which is when it was planned to. Set by the
+            server on every transition into a stage of type `released` — including a re-release, which restamps it — and
+            cleared when the release leaves such a stage. Never client-writable. Moving between two `released` stages
+            keeps the original value.
+        assignee_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+          nullable: true
+        notes_document_id:
+          $ref: '#/components/schemas/ObjectId'
+          nullable: true
+        notes_summary:
+          type: string
+          nullable: true
+        pipeline:
+          allOf:
+            - $ref: '#/components/schemas/ReleasePipelineSummaryResponse'
+          nullable: true
+        stage:
+          allOf:
+            - $ref: '#/components/schemas/ReleaseStageResponse'
+          nullable: true
+        assignee:
+          allOf:
+            - $ref: '#/components/schemas/UserBasic'
+          nullable: true
+        main_doc:
+          allOf:
+            - $ref: '#/components/schemas/ContentBasic'
+          nullable: true
+        issue_count:
+          type: integer
+          minimum: 0
+        completed_issue_count:
+          type: integer
+          minimum: 0
+        open_issue_count:
+          type: integer
+          minimum: 0
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    ReleaseStageResponse:
+      type: object
+      required:
+        - id
+        - pipeline_id
+        - name
+        - type
+        - position
+        - is_frozen
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        pipeline_id:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        type:
+          $ref: '#/components/schemas/ReleaseStageType'
+        position:
+          type: integer
+          minimum: 0
+        is_frozen:
+          type: boolean
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    ReleaseStageType:
+      type: string
+      enum:
+        - planned
+        - started
+        - in_progress
+        - released
+        - canceled
+    ReleasePipelineSummaryResponse:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+    ReleaseCommitSha:
+      type: string
+      minLength: 7
+      maxLength: 40
+      pattern: ^[0-9a-fA-F]{7,40}$
+      description: >
+        The commit this release was cut from, and the baseline the next CI scan measures from. Stored lowercase. Only
+        ever moves forward: a deploy of an older commit must omit it, or the following sync re-attaches work that
+        already shipped.
+    IssueBasic:
+      type: object
+      required:
+        - id
+        - code
+        - title
+        - status
+        - priority
+        - type
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        code:
+          type: string
+          example: EN-LIF-1
+          description: Auto-generated issue code
+        title:
+          type: string
+          minLength: 2
+          maxLength: 200
+          example: Implement user login functionality
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: Add authentication system with JWT tokens
+        status:
+          $ref: '#/components/schemas/IssueStatus'
+        priority:
+          $ref: '#/components/schemas/IssuePriority'
+        type:
+          $ref: '#/components/schemas/IssueType'
+    IssueType:
+      type: string
+      enum:
+        - bug
+        - feature
+        - task
+        - story
+      description: Issue type
+    Request:
+      allOf:
+        - $ref: '#/components/schemas/RequestBasic'
+        - type: object
+          properties:
+            customer_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: >-
+                Customer this request came from. Null for internal requests. `contact_id` can only be set when this is
+                set.
+            contact_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: Contact at `customer_id` this request came from, if known.
+            source:
+              type: string
+              enum:
+                - manual
+              description: Where the request entered Pulse. Only `manual` (staff-entered) exists today.
+              example: manual
+            external_reference:
+              type: string
+              maxLength: 200
+              nullable: true
+              description: >-
+                Optional externally-supplied identifier (e.g. a ticket ID from the customer's own system). Unique per
+                `(workspace_id, source, external_reference)` among non-deleted requests.
+            customer:
+              allOf:
+                - $ref: '#/components/schemas/Customer'
+                - nullable: true
+              description: Enriched customer (when `customer_id` is set).
+            contact:
+              allOf:
+                - $ref: '#/components/schemas/Contact'
+                - nullable: true
+              description: Enriched contact (when `contact_id` is set).
+            reviewer_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+            reviewed_at:
+              allOf:
+                - $ref: '#/components/schemas/DateTime'
+                - nullable: true
+            expected_completion_at:
+              allOf:
+                - $ref: '#/components/schemas/DateTime'
+                - nullable: true
+              description: Reviewer commitment for when accepted work should finish (full date-time, RFC3339)
+            duplicate_of_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: The canonical request this one duplicates; null when not a duplicate.
+            duplicate_ids:
+              type: array
+              items:
+                $ref: '#/components/schemas/ObjectId'
+              description: IDs of requests marked as duplicates of this one (canonical side only)
+            duplicate_of:
+              allOf:
+                - $ref: '#/components/schemas/RequestRef'
+                - nullable: true
+              description: Enriched canonical request reference (when duplicate_of_id is set)
+            duplicates:
+              type: array
+              items:
+                $ref: '#/components/schemas/RequestRef'
+              description: Enriched duplicate request references (when duplicate_ids is non-empty)
+            team:
+              allOf:
+                - $ref: '#/components/schemas/TeamBasic'
+                - nullable: true
+            requester:
+              allOf:
+                - $ref: '#/components/schemas/User'
+                - nullable: true
+            requester_team:
+              allOf:
+                - $ref: '#/components/schemas/TeamBasic'
+                - nullable: true
+              description: >-
+                Display enrichment for the requesting team. When `requester_team_id` is set this resolves it. When it is
+                NULL the server may still fall back to a team derived from the requester's own memberships, so this
+                object can be present while `requester_team_id` is null — `requester_team_id` is the stored attribution
+                and the only thing to branch on; this is a best-effort label.
+            reviewer:
+              allOf:
+                - $ref: '#/components/schemas/User'
+                - nullable: true
+            key_results:
+              type: array
+              items:
+                $ref: '#/components/schemas/KeyResult'
+              description: Enriched key result data (when key_result_ids are provided)
+            projects:
+              type: array
+              items:
+                $ref: '#/components/schemas/ProjectBasic'
+              description: Enriched project data (when project_ids are provided)
+            issues:
+              type: array
+              items:
+                $ref: '#/components/schemas/IssueBasic'
+              description: Enriched issue data (when issue_ids are provided)
+            label_ids:
+              type: array
+              items:
+                $ref: '#/components/schemas/ObjectId'
+            labels:
+              type: array
+              items:
+                $ref: '#/components/schemas/CatalogLabel'
+            main_doc_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+                - nullable: true
+              description: Denormalized pointer to the request's main document (root content ID).
+            main_doc:
+              allOf:
+                - $ref: '#/components/schemas/ContentBasic'
+                - nullable: true
+              description: Enriched main document (when main_doc_id is set).
+            is_subscribed:
+              type: boolean
+              description: >
+                True when the current user has an explicit `subscribed` row. Absence of a row does not guarantee
+                silence—implicit/auto subscribers may still receive notifications until they unsubscribe.
+            subscriber_count:
+              type: integer
+              minimum: 0
+              description: Count of explicit `subscribed` rows for this request.
+            grant_info:
+              allOf:
+                - $ref: '#/components/schemas/GrantInfo'
+                - nullable: true
+                - description: >-
+                    Present when the requesting user accessed this request via an explicit share grant. Absent for users
+                    accessing via requester or team-management permissions.
+            sla:
+              allOf:
+                - $ref: '#/components/schemas/SLASummaryResponse'
+                - nullable: true
+                - description: >-
+                    Present when the request has an active SLA assignment. Absent when SLA is disabled for the workspace
+                    or no rule matched.
+            created_at:
+              $ref: '#/components/schemas/DateTime'
+            updated_at:
+              $ref: '#/components/schemas/DateTime'
+    CatalogLabel:
+      type: object
+      required:
+        - id
+        - scope
+        - entity_type
+        - name
+        - color
+        - archived
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        scope:
+          $ref: '#/components/schemas/LabelScope'
+        team_id:
+          $ref: '#/components/schemas/ObjectId'
+        entity_type:
+          $ref: '#/components/schemas/LabelEntityType'
+        name:
+          type: string
+          maxLength: 50
+        color:
+          $ref: '#/components/schemas/HexColor'
+        description:
+          type: string
+          maxLength: 200
+        group_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+        group:
+          allOf:
+            - $ref: '#/components/schemas/LabelGroup'
+            - nullable: true
+        archived:
+          type: boolean
+        archived_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - nullable: true
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    LabelGroup:
+      type: object
+      required:
+        - id
+        - scope
+        - entity_type
+        - name
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        scope:
+          $ref: '#/components/schemas/LabelScope'
+        team_id:
+          $ref: '#/components/schemas/ObjectId'
+        entity_type:
+          $ref: '#/components/schemas/LabelEntityType'
+        name:
+          type: string
+          maxLength: 50
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    LabelEntityType:
+      type: string
+      enum:
+        - issue
+        - project
+        - request
+        - initiative
+    LabelScope:
+      type: string
+      enum:
+        - workspace
+        - team
+    ProjectBasic:
+      type: object
+      required:
+        - id
+        - title
+        - status
+        - priority
+        - icon_code
+        - icon_color
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        title:
+          type: string
+          minLength: 2
+          maxLength: 200
+          example: Mobile App Backend API
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: Develop comprehensive REST API
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+        priority:
+          $ref: '#/components/schemas/ProjectPriority'
+        health_status:
+          allOf:
+            - $ref: '#/components/schemas/ProjectHealthStatus'
+            - nullable: true
+          description: Denormalized health from the most recent project status update.
+        icon_code:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: api-backend
+        icon_color:
+          $ref: '#/components/schemas/HexColor'
+        start_date:
+          $ref: '#/components/schemas/DateTime'
+        target_date:
+          $ref: '#/components/schemas/DateTime'
+        completed_at:
+          $ref: '#/components/schemas/DateTime'
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          example: 65
+    ProjectHealthStatus:
+      type: string
+      enum:
+        - on_track
+        - off_track
+        - at_risk
+      description: Project health status
+    ProjectPriority:
+      type: string
+      enum:
+        - no_priority
+        - urgent
+        - high
+        - medium
+        - low
+      description: Project priority level
+    ProjectStatus:
+      type: string
+      enum:
+        - idea
+        - discovery
+        - proposal
+        - accepted
+        - ready
+        - in_progress
+        - paused
+        - maintenance
+        - completed
+        - canceled
+      description: Project lifecycle status
+    KeyResult:
+      type: object
+      required:
+        - id
+        - objective_id
+        - title
+        - weight
+        - target_type
+        - direction
+        - baseline
+        - target_value
+        - current_value
+        - value_type
+        - status
+        - progress
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        objective_id:
+          $ref: '#/components/schemas/ObjectId'
+        title:
+          type: string
+          minLength: 2
+          maxLength: 200
+          example: Increase user engagement
+        description:
+          type: string
+          minLength: 10
+          maxLength: 500
+          example: Improve daily active user engagement
+        weight:
+          type: integer
+          minimum: 0
+          maximum: 100
+          example: 80
+        target_type:
+          $ref: '#/components/schemas/KeyResultTargetType'
+        direction:
+          $ref: '#/components/schemas/KeyResultDirection'
+          description: Automatically calculated from baseline and target values
+        baseline:
+          type: number
+          format: float
+          default: 0
+          example: 0
+          description: >-
+            Starting value for progress calculation. Required, defaults to 0. Set from metric current_value when
+            linking.
+        target_value:
+          type: number
+          format: float
+          example: 100
+        current_value:
+          type: number
+          format: float
+          example: 75
+          description: Current value. Automatically updated from linked metric or manually set via API.
+        min_threshold:
+          type: number
+          format: float
+          nullable: true
+          example: 50
+          description: Required for threshold_based target type. No progress counted until this value is reached.
+        period_type:
+          allOf:
+            - $ref: '#/components/schemas/KeyResultPeriodType'
+            - nullable: true
+          description: Required for stepwise, cumulative, and average_based target types
+        step_targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/StepTarget'
+          description: >
+            Custom targets for each period in stepwise Key Results.
+
+            If provided, measurements are matched to periods by date range and use the specific target for that period.
+
+            If not provided or a measurement falls outside all defined periods, the system falls back to equal division
+            of the total target_value.
+
+            Periods must not overlap and period_end must be after period_start.
+        progress:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 75
+          description: Cached progress value, recalculated if older than 24 hours
+        last_calculated_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - nullable: true
+          description: When progress was last calculated
+        value_type:
+          $ref: '#/components/schemas/KeyResultValueType'
+        value_unit:
+          type: string
+          maxLength: 20
+          nullable: true
+          example: '%'
+        metric_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: ID of the linked metric. When set, baseline and current_value are automatically synced from the metric.
+        owner_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+        status:
+          $ref: '#/components/schemas/KeyResultStatus'
+        owner:
+          allOf:
+            - $ref: '#/components/schemas/UserBasic'
+            - nullable: true
+        metric:
+          allOf:
+            - $ref: '#/components/schemas/Metric'
+            - nullable: true
+          description: Enriched metric data (only present when metric_id is set)
+        measurements:
+          type: array
+          items:
+            $ref: '#/components/schemas/KRMeasurement'
+          description: Historical measurements for this key result (enriched data)
+        measurement_count:
+          type: integer
+          example: 5
+          description: Total number of measurements
+        initiatives:
+          type: array
+          items:
+            $ref: '#/components/schemas/InitiativeBasic'
+        main_doc_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+        main_doc:
+          allOf:
+            - $ref: '#/components/schemas/ContentBasic'
+            - nullable: true
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContentBasic'
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    InitiativeBasic:
+      type: object
+      required:
+        - id
+        - title
+        - status
+        - priority
+        - icon_code
+        - icon_color
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        title:
+          type: string
+          minLength: 2
+          maxLength: 200
+          example: Mobile App Redesign
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: Complete redesign of the mobile application
+        status:
+          $ref: '#/components/schemas/InitiativeStatus'
+        priority:
+          $ref: '#/components/schemas/InitiativePriority'
+        icon_code:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: mobile-app
+        icon_color:
+          $ref: '#/components/schemas/HexColor'
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          example: 45
+        target_date:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - nullable: true
+    InitiativePriority:
+      type: string
+      enum:
+        - no_priority
+        - urgent
+        - high
+        - medium
+        - low
+      description: >-
+        Initiative priority. Sorting is served by the numeric `priority_order` column shared with projects and issues
+        (ascending, urgent first, no_priority last); sort by `priority` or `priority_order`.
+      default: no_priority
+    InitiativeStatus:
+      type: string
+      enum:
+        - proposed
+        - planned
+        - active
+        - completed
+        - canceled
+      description: >-
+        Initiative lifecycle status. `completed` and `canceled` are the terminal states, and both are excluded from
+        check-in nudges. Progress and status stay coupled unless the initiative is canceled: reaching 100% sets
+        `completed`, dropping below 100% reopens a `completed` initiative as `active`, and a `canceled` initiative keeps
+        its status through any progress change.
+    KRMeasurement:
+      type: object
+      required:
+        - id
+        - kr_id
+        - value
+        - recorded_at
+        - recorded_by
+        - source
+        - created_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        kr_id:
+          $ref: '#/components/schemas/ObjectId'
+        value:
+          type: number
+          format: float
+          example: 75.5
+        recorded_at:
+          $ref: '#/components/schemas/DateTime'
+        period:
+          type: string
+          nullable: true
+          example: 2025-W03
+          description: Period identifier (e.g., "2025-W03" for weekly, "2025-01" for monthly)
+        recorded_by:
+          $ref: '#/components/schemas/ObjectId'
+        source:
+          $ref: '#/components/schemas/MeasurementSource'
+        notes:
+          type: string
+          nullable: true
+          maxLength: 500
+        recorded_by_user:
+          allOf:
+            - $ref: '#/components/schemas/UserBasic'
+            - nullable: true
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+    MeasurementSource:
+      type: string
+      enum:
+        - manual
+        - metric
+        - daily_snapshot
+      description: >-
+        How the measurement was created. `daily_snapshot` is written by the daily key-result snapshot job and by the
+        backfill in migration 015, so it appears on stored rows a client will read back.
+    Metric:
+      type: object
+      required:
+        - id
+        - name
+        - unit
+        - current_value
+        - last_updated_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+          example: Daily Active Users
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: Number of unique users who engage with the platform daily
+        unit:
+          type: string
+          maxLength: 50
+          example: users
+        current_value:
+          type: number
+          format: float
+          example: 1250.5
+        last_updated_at:
+          $ref: '#/components/schemas/DateTime'
+        owner_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+        team_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+        owner:
+          allOf:
+            - $ref: '#/components/schemas/UserBasic'
+            - nullable: true
+        team:
+          allOf:
+            - $ref: '#/components/schemas/TeamBasic'
+            - nullable: true
+        linked_key_results_count:
+          type: integer
+          minimum: 0
+          example: 3
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    KeyResultStatus:
+      type: string
+      enum:
+        - on_track
+        - at_risk
+        - off_track
+        - completed
+      description: Key result status
+    KeyResultValueType:
+      type: string
+      enum:
+        - number
+        - percentage
+        - currency
+        - custom
+      description: Value type for measurements
+    StepTarget:
+      type: object
+      required:
+        - period_start
+        - period_end
+        - target_value
+      properties:
+        period_start:
+          $ref: '#/components/schemas/DateTime'
+          description: Start date of the period (inclusive)
+        period_end:
+          $ref: '#/components/schemas/DateTime'
+          description: End date of the period (inclusive)
+        target_value:
+          type: number
+          format: float
+          minimum: 0
+          exclusiveMinimum: true
+          example: 25
+          description: Target value for this specific period
+        baseline:
+          type: number
+          format: float
+          nullable: true
+          example: 0
+          description: Optional baseline for this period. If not provided, uses the Key Result's baseline.
+    KeyResultPeriodType:
+      type: string
+      enum:
+        - weekly
+        - monthly
+      description: Period granularity for stepwise/cumulative/average tracking
+    KeyResultDirection:
+      type: string
+      enum:
+        - increasing
+        - decreasing
+      description: |
+        Direction of progress (automatically calculated):
+        - increasing: Higher values are better (target > baseline)
+        - decreasing: Lower values are better (target < baseline)
+    KeyResultTargetType:
+      type: string
+      enum:
+        - final_value
+        - stepwise
+        - cumulative
+        - average_based
+        - threshold_based
+        - growth_rate
+        - boolean
+      description: |
+        Progress calculation model:
+        - final_value: Only final value matters (default)
+        - stepwise: Target divided equally across periods (or custom step_targets), progress averaged
+        - cumulative: Sum of all measurements compared to target
+        - average_based: Average of measurements compared to target
+        - threshold_based: No progress until minimum threshold reached
+        - growth_rate: Percentage growth from baseline to target
+        - boolean: Binary achievement (0% or 100%)
+    User:
+      type: object
+      required:
+        - id
+        - email
+        - role
+        - status
+        - team_memberships
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        role:
+          type: string
+          enum:
+            - admin
+            - user
+          example: user
+        first_name:
+          type: string
+          example: Ali
+        last_name:
+          type: string
+          example: Fazeli
+        job_title:
+          type: string
+          maxLength: 100
+          description: >-
+            Optional free-text job title. Absent when the user has never set one, or cleared it. Global to the user, not
+            per-workspace.
+          example: Staff Engineer
+        display_name:
+          type: string
+          example: Ali Fazeli
+          description: concatenated first name and last name, fallback to email
+        is_agent:
+          type: boolean
+          description: >-
+            True only for the Pulse Agent's own account. The agent is an ordinary user — that is what makes it
+            mentionable and assignable — so this derived flag is the only way to tell it apart. Clients MUST badge it
+            wherever it appears (comment authors, mention chips, member lists); an agent that reads as a human is
+            exactly what the agent guidelines forbid. Absent for every human, so present-and-true is the whole contract.
+          example: true
+        user_kind:
+          type: string
+          enum:
+            - human
+            - application
+          description: >-
+            Authoritative classification of the account. `application` marks a managed application identity (the Pulse
+            Agent today, future automated actors tomorrow); `human` is everyone else. Always present. Clients choosing
+            presentation or allowed actions must branch on this (or `is_agent`, or `agent_kind`), never on name, email,
+            avatar, or a Pulse-Agent-specific constant.
+          example: application
+        agent_kind:
+          allOf:
+            - $ref: '#/components/schemas/AgentKind'
+          description: >-
+            Present only when `user_kind` is `application`: `deployment` (Pulse Agent), `personal` (a member's own
+            agent) or `app` (an installed agent app).
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Public URL to user's avatar image
+          example: https://storage.example.com/avatars/user123/1234567890.jpg
+        avatar_urls:
+          $ref: '#/components/schemas/AvatarURLSet'
+        avatar_status:
+          type: string
+          enum:
+            - pending
+            - processing
+            - processed
+          nullable: true
+          description: >-
+            AI avatar-processing status. Absent/null for users who have never uploaded an avatar. "pending"/"processing"
+            mean an AI-enhanced version is being generated in the background — poll this endpoint until it becomes
+            "processed", at which point avatar_url reflects the final image (or the original, if generation ultimately
+            failed after retries).
+          example: processed
+        status:
+          type: string
+          enum:
+            - active
+            - blocked
+            - pending
+          example: active
+        team_memberships:
+          type: array
+          description: Array of team memberships (supports many-to-many relationship)
+          items:
+            $ref: '#/components/schemas/TeamMembership'
+          example:
+            - team_id: 60f7b3b3b3b3b3b3b3b3b3b4
+              team_role: manager
+            - team_id: 60f7b3b3b3b3b3b3b3b3b3b5
+              team_role: member
+        teams:
+          type: array
+          description: Enriched team data (not persisted, populated on read)
+          items:
+            $ref: '#/components/schemas/TeamBasic'
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    RequestRef:
+      type: object
+      required:
+        - id
+        - code
+        - title
+        - status
+        - type
+        - priority
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        code:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+        type:
+          type: string
+        priority:
+          type: string
+    Contact:
+      type: object
+      required:
+        - id
+        - customer_id
+        - name
+        - email
+        - archived
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        workspace_id:
+          type: string
+          description: Owning workspace ID.
+        customer_id:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        email:
+          type: string
+          format: email
+          maxLength: 320
+          description: Normalized (lowercased, trimmed) email. Unique per `(customer_id, email)` among active contacts.
+        job_title:
+          type: string
+          maxLength: 120
+        archived:
+          type: boolean
+          description: Contacts are archived, never deleted — there is no DELETE endpoint.
+        archived_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - nullable: true
+        created_by:
+          $ref: '#/components/schemas/ObjectId'
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+        customer:
+          allOf:
+            - $ref: '#/components/schemas/Customer'
+            - nullable: true
+          description: >-
+            Enriched parent customer. Populated where the caller enriches contacts against their customer (e.g. via a
+            request's `contact` field); not populated on `/contacts` list/get responses.
+    Customer:
+      type: object
+      required:
+        - id
+        - name
+        - archived
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        workspace_id:
+          type: string
+          description: Owning workspace ID.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          example: Acme Corp
+        domains:
+          type: array
+          items:
+            type: string
+          description: >-
+            Normalized domains (scheme, `www.`, path, and `@` prefix stripped) used to identify the customer. Unique per
+            workspace among active (non-archived, non-deleted) customers.
+          example:
+            - acme.com
+            - acme.io
+        notes:
+          type: string
+          maxLength: 2000
+        icon_code:
+          type: string
+          maxLength: 64
+        icon_color:
+          type: string
+          maxLength: 16
+        status_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: >-
+            Workspace-managed status catalog value. Absent when the customer has no status — which is the truth for
+            every customer created before statuses existed, since the migration deliberately does not invent one.
+        status:
+          allOf:
+            - $ref: '#/components/schemas/CustomerCatalogValue'
+            - nullable: true
+          description: >-
+            Enrichment for display. Resolves archived values too, so a customer still pointing at a retired status
+            renders its name rather than a blank cell. May be absent if the lookup failed — never treat a missing object
+            as a missing value; `status_id` is the contract.
+        tier_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+        tier:
+          allOf:
+            - $ref: '#/components/schemas/CustomerCatalogValue'
+            - nullable: true
+        annual_revenue:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Whole-unit amount in the workspace's configured currency (`GET /customer-settings`). Account metadata for
+            segmentation only — not a pipeline or forecast figure, and it carries no date or stage. Absent and `0` are
+            different answers: absent means nothing was recorded.
+        size:
+          type: integer
+          format: int64
+          nullable: true
+          description: Headcount.
+        owner_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: >-
+            A workspace member. Routing and accountability only — owning a customer grants no access to its requests or
+            to any delivery work linked to them.
+        owner:
+          allOf:
+            - $ref: '#/components/schemas/CustomerOwner'
+            - nullable: true
+        logo_url:
+          type: string
+          description: >-
+            Signed, expiring URL for the uploaded logo. Derived per response — never persist it client-side. Absent when
+            no logo has been uploaded, in which case `icon_code`/`icon_color` are the fallback mark.
+        request_count:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Number of requests linked to this customer that THE CALLER may see, computed per response with the caller's
+            visibility applied. It is never denormalized, because a stored total would disclose the existence of work on
+            teams the caller cannot read. Absent (rather than `0`) when the deployment could not compute it, so a client
+            can tell "none" from "unknown". Not filterable or sortable, for the same reason.
+        merged_into_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+          description: >-
+            Set on a customer absorbed by another. The row is kept, archived and pointed at the survivor so an old link
+            resolves to a tombstone the client can follow instead of a 404.
+        merged_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - nullable: true
+        archived:
+          type: boolean
+          description: Customers are archived, never deleted — there is no DELETE endpoint.
+        archived_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - nullable: true
+        created_by:
+          $ref: '#/components/schemas/ObjectId'
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+        contacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contact'
+          description: >-
+            Enriched active contacts for this customer. Only populated by `GET /customers/{id}`, never on list
+            responses.
+    CustomerOwner:
+      type: object
+      description: Trimmed member projection returned beside `owner_id`.
+      required:
+        - id
+        - active
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        display_name:
+          type: string
+        email:
+          type: string
+          format: email
+        avatar_url:
+          type: string
+          description: Signed, expiring URL.
+        active:
+          type: boolean
+          description: >-
+            `false` when the stored owner is no longer a member of this workspace. The id is kept rather than erased so
+            the directory can show which rows need reassigning; a DELETED user's reference is cleared instead, by the
+            user-deleted listener.
+    CustomerCatalogValue:
+      type: object
+      description: >-
+        One entry in a workspace's customer status or tier catalog. Values are archived, never deleted, so a customer
+        that ever referenced one keeps resolving it and historical records stay legible.
+      required:
+        - id
+        - kind
+        - name
+        - sort_order
+        - is_default
+        - archived
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        workspace_id:
+          type: string
+        kind:
+          type: string
+          enum:
+            - status
+            - tier
+        name:
+          type: string
+          minLength: 1
+          maxLength: 60
+        color:
+          type: string
+          maxLength: 16
+          description: '`#rrggbb`, or empty for the client''s neutral swatch.'
+        description:
+          type: string
+          maxLength: 200
+        sort_order:
+          type: integer
+        is_default:
+          type: boolean
+          description: >-
+            Applied to a customer created without an explicit choice. At most one live value per kind carries it;
+            setting it demotes the previous holder. Archiving a value clears it.
+        archived:
+          type: boolean
+        archived_at:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+            - nullable: true
+        created_by:
+          type: string
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    RequestBasic:
+      type: object
+      required:
+        - id
+        - code
+        - title
+        - type
+        - status
+        - team_id
+        - requester_id
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        code:
+          type: string
+          description: Human-readable code for the request (e.g., "EIR", "NTFR-1")
+          example: EIR
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+          example: Login button not working on mobile
+        description:
+          type: string
+          maxLength: 500
+          example: When clicking the login button on mobile Safari, nothing happens. This is blocking users from logging in.
+        type:
+          type: string
+          enum:
+            - bug
+            - feature
+            - other
+          example: bug
+        status:
+          type: string
+          enum:
+            - triage
+            - pending
+            - accepted
+            - rejected
+            - done
+            - duplicate
+          example: triage
+        team_id:
+          $ref: '#/components/schemas/ObjectId'
+        requester_id:
+          $ref: '#/components/schemas/ObjectId'
+        requester_team_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+            - nullable: true
+        key_result_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectId'
+          description: Optional array of key result IDs this request is linked to (specific measurable outcomes)
+          example:
+            - 507f1f77bcf86cd799439011
+            - 507f1f77bcf86cd799439012
+        project_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectId'
+          description: Optional array of project IDs this request is linked to
+          example:
+            - 507f1f77bcf86cd799439013
+            - 507f1f77bcf86cd799439014
+        issue_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectId'
+          description: Optional array of issue IDs this request is linked to
+          example:
+            - 507f1f77bcf86cd799439015
+            - 507f1f77bcf86cd799439016
+    Milestone:
+      type: object
+      required:
+        - id
+        - project_id
+        - name
+        - sort_order
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        project_id:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Public launch
+        description:
+          type: string
+          maxLength: 500
+          example: Everything needed to open the product to all customers
+        target_date:
+          allOf:
+            - $ref: '#/components/schemas/DateTime'
+          nullable: true
+          description: Optional. Set to `null` to unset; omit to leave unchanged.
+        sort_order:
+          type: integer
+          minimum: 0
+          example: 2
+          description: Manual position within the project. Change it with the reorder endpoint.
+        main_doc_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+          nullable: true
+          description: Rich description document, attached via the content endpoints with entity_type "milestone".
+        status:
+          type: string
+          enum:
+            - unstarted
+            - in_progress
+            - completed
+          example: in_progress
+          description: >-
+            Derived from the linked issues, never stored. A milestone with no issues is "unstarted". Absent where stats
+            were not computed — notably the milestone embedded in an issue response.
+        is_current:
+          type: boolean
+          example: true
+          description: >-
+            True for the first non-completed milestone in the project's ordering — the one being worked towards. Only
+            set where the full project ordering is known (project detail and the project's milestone list), not on the
+            cross-project milestone list.
+        stats:
+          allOf:
+            - $ref: '#/components/schemas/MilestoneStats'
+            - nullable: true
+          description: Issue count and progress statistics. Present in project detail responses.
+        created_at:
+          $ref: '#/components/schemas/DateTime'
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+    MilestoneStats:
+      type: object
+      description: Aggregated issue statistics for a milestone
+      properties:
+        total_issues:
+          type: integer
+          minimum: 0
+          example: 10
+          description: Total number of issues linked to this milestone
+        started_issues:
+          type: integer
+          minimum: 0
+          example: 2
+          description: Number of issues with status "in_progress", "qa" or "release"
+        done_issues:
+          type: integer
+          minimum: 0
+          example: 4
+          description: Number of issues with status "done"
+        total_points:
+          type: integer
+          minimum: 0
+          example: 21
+          description: >-
+            Weighted equivalent of total_issues. An issue weighs its estimate when its own team has estimates enabled,
+            and 1 otherwise — so for a team that never enabled estimates, points equal issue counts.
+        started_points:
+          type: integer
+          minimum: 0
+          example: 5
+          description: Weighted equivalent of started_issues.
+        done_points:
+          type: integer
+          minimum: 0
+          example: 8
+          description: Weighted equivalent of done_issues.
+        estimated_issues:
+          type: integer
+          minimum: 0
+          example: 6
+          description: >-
+            How many of total_issues carry an estimate that was actually applied. An unestimated issue is excluded even
+            on a team with estimates enabled, because it still weighs the flat fallback. Zero means every point equals
+            one issue.
+        estimate_based:
+          type: boolean
+          example: true
+          description: Convenience for estimated_issues > 0.
+        progress:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 50
+          description: >-
+            Completion percentage over points. A started issue contributes half a unit and a done issue a full one:
+            (done_points + 0.5 × started_points) / total_points × 100. Zero when total_points is zero — which happens
+            for a team that enabled estimates, turned off counting unestimated issues, and has estimated nothing yet. A
+            milestone in that state still reports status "completed" once all its issues are done: completion is decided
+            by issue counts, not points.
+    IssueDevelopmentSummary:
+      type: object
+      description: >-
+        Compact source-control summary embedded on issue LIST reads only. Full artifact data — and the only source of
+        truth for whether an issue has links at all — remains on GET /issues/{id}/development-links.
+      required:
+        - total
+        - pull_requests
+        - merge_requests
+        - commits
+        - branches
+        - primary_draft
+      properties:
+        total:
+          type: integer
+          minimum: 1
+        pull_requests:
+          type: integer
+          minimum: 0
+        merge_requests:
+          type: integer
+          minimum: 0
+        commits:
+          type: integer
+          minimum: 0
+        branches:
+          type: integer
+          minimum: 0
+        primary_provider:
+          type: string
+          enum:
+            - github
+            - gitlab
+        primary_kind:
+          type: string
+          enum:
+            - pull_request
+            - merge_request
+            - commit
+            - branch
+        primary_label:
+          type: string
+        primary_state:
+          type: string
+          enum:
+            - draft
+            - open
+            - closed
+            - merged
+            - unknown
+        primary_draft:
+          type: boolean
+    IssueProgress:
+      type: object
+      description: Progress tracking for parent issues with sub-tasks
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          description: Total number of sub-tasks
+          example: 5
+        done:
+          type: integer
+          minimum: 0
+          description: Number of completed sub-tasks
+          example: 3
+        updated_at:
+          $ref: '#/components/schemas/DateTime'
+          description: Last progress calculation time
+    Conflict:
+      type: object
+      description: >-
+        Identifies the resource a write collided with. Which fields are populated depends on the endpoint — an identity
+        conflict (e.g. duplicate external reference) carries `id`/`code`; a state conflict (e.g. acting on an
+        already-resolved resource) carries `status` instead.
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+          description: ID of the conflicting/existing resource.
+        code:
+          type: string
+          description: Human-readable code of the conflicting resource, when applicable.
+        status:
+          type: string
+          description: >-
+            Current status of the existing resource, when the conflict is with its own state rather than another
+            resource's identity.
+    AgentSession:
+      type: object
+      description: >-
+        An agent session as an app sees it. Identical to `AgentSession` in pulse-agent's Agent Session API (`GET
+        /agent-sessions/{session_id}`).
+      required:
+        - id
+        - state
+        - unresponsive_since
+        - issue
+        - comment
+        - creator
+        - app_user_id
+        - plan
+        - external_urls
+        - created_at
+        - updated_at
+        - ended_at
+        - end_reason
+      properties:
+        id:
+          type: string
+          example: sess_01J9Z3K8T5N2
+        state:
+          $ref: '#/components/schemas/AgentSessionState'
+        unresponsive_since:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Set when neither an app activity nor an external URL arrived within 10 seconds of creation; cleared by the
+            first one.
+        issue:
+          type: object
+          nullable: true
+          description: The issue the session works on. Null for a mention on a project comment.
+          required:
+            - id
+            - identifier
+            - title
+            - url
+            - team
+          properties:
+            id:
+              type: string
+            identifier:
+              type: string
+              description: The issue code.
+              example: PUL-123
+            title:
+              type: string
+            url:
+              type: string
+              format: uri
+            team:
+              type: object
+              required:
+                - id
+                - key
+                - name
+              properties:
+                id:
+                  type: string
+                key:
+                  type: string
+                  description: The team's issue key prefix.
+                  example: PUL
+                name:
+                  type: string
+        comment:
+          type: object
+          nullable: true
+          description: The comment that opened a mention session. Null for a delegation session.
+          required:
+            - id
+            - body
+            - url
+          properties:
+            id:
+              type: string
+            body:
+              type: string
+              description: Markdown.
+            url:
+              type: string
+              format: uri
+        creator:
+          allOf:
+            - $ref: '#/components/schemas/AgentSessionPerson'
+          description: The human who delegated or mentioned the app. For a session the app created itself, the app user.
+        app_user_id:
+          type: string
+        plan:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/AgentSessionPlanItem'
+        external_urls:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/AgentSessionExternalUrl'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the session ended with an `end_reason`.
+        end_reason:
+          $ref: '#/components/schemas/AgentSessionEndReason'
+    AgentSessionEndReason:
+      type: string
+      nullable: true
+      description: |
+        Why a human or Pulse is ending, or ended, the session rather than the app. For
+        `stopped` and `undelegated` it is set as soon as the session enters `stopping`, so
+        the app knows why it is being stopped; `uninstalled`, `team_removed` and
+        `issue_deleted` end the session at once, with no `stopping` and no `prompted`.
+        `ended_at` is set when the session actually ends. Null otherwise. Once the session has
+        ended with one of these, app writes answer `409 SESSION_ENDED`.
+
+        - `stopped`: a human pressed Stop.
+        - `undelegated`: the issue was undelegated or delegated to another agent.
+        - `uninstalled`: the app was uninstalled.
+        - `team_removed`: the installation no longer covers the issue's team.
+        - `issue_deleted`: the issue was deleted.
+      enum:
+        - stopped
+        - undelegated
+        - uninstalled
+        - team_removed
+        - issue_deleted
+        - null
+    AgentSessionExternalUrl:
+      type: object
+      required:
+        - label
+        - url
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 60
+          example: Open in Scout
+        url:
+          type: string
+          format: uri
+          pattern: ^https://
+          description: Unique within a session.
+          example: https://scout.acme.example/runs/42
+    AgentSessionPlanItem:
+      type: object
+      required:
+        - content
+        - status
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 500
+          example: Read the issue and its threads
+        status:
+          type: string
+          enum:
+            - pending
+            - inProgress
+            - completed
+            - canceled
+    AgentSessionState:
+      type: string
+      description: |
+        Derived by Pulse from the app's last activity; the app never sets it directly.
+
+        - `pending`: created, or reopened by a human prompt; nothing from the app yet.
+        - `active`: the last app activity was a `thought` or an `action`.
+        - `awaitingInput`: the last app activity was an `elicitation`.
+        - `error`: the last app activity was an `error`.
+        - `complete`: the last app activity was a `response`, or Pulse ended the session.
+        - `stale`: 30 minutes passed in `pending` or `active` with no app activity.
+          Recoverable: any app activity or human prompt moves it on.
+        - `stopping`: a human pressed Stop, or the issue was undelegated; see `end_reason`.
+          The app's next `response` or `error`, or 60 seconds, ends it as `complete`.
+      enum:
+        - pending
+        - active
+        - awaitingInput
+        - error
+        - complete
+        - stale
+        - stopping
+  responses:
+    IssueWriteForbidden:
+      description: >
+        Insufficient permissions (`FORBIDDEN`), a missing OAuth scope (`INSUFFICIENT_SCOPE`, see InsufficientScope), or
+        a status an agent app may not set (`APP_STATUS_FORBIDDEN`). An agent app token may create an issue only in
+        `backlog`, `todo`, `in_progress` or `qa`, and may change an issue's status only to `in_progress` or `qa`;
+        closing (`release`, `done`) stays with a person.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            forbidden:
+              value:
+                code: FORBIDDEN
+                message: Insufficient permissions to access this resource
+            appStatusForbidden:
+              value:
+                code: APP_STATUS_FORBIDDEN
+                message: Agent apps cannot move an issue to done
+                details:
+                  status: done
+                  allowed:
+                    - in_progress
+                    - qa
+            insufficientScope:
+              value:
+                code: INSUFFICIENT_SCOPE
+                message: This token is missing a required scope
+                details:
+                  required:
+                    - write
+                    - issues:create
+                  granted:
+                    - read
+    Unauthorized:
+      description: Unauthorized - Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: UNAUTHORIZED
+            message: Authentication required
+    IssueWriteBadRequest:
+      description: |
+        Bad Request - Invalid input data. A refused agent delegate answers `INVALID_DELEGATE`
+        with a localized `message` and a stable `details.reason` (InvalidDelegateDetails).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - type: object
+                properties:
+                  details:
+                    anyOf:
+                      - $ref: '#/components/schemas/InvalidDelegateDetails'
+                      - type: object
+                        additionalProperties: true
+          examples:
+            invalidRequest:
+              value:
+                code: INVALID_REQUEST
+                message: Invalid request format
+            invalidDelegate:
+              value:
+                code: INVALID_DELEGATE
+                message: Delegate agent has no access to the issue's team
+                details:
+                  reason: no_team_access
+    NotFound:
+      description: Not Found - Resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: RESOURCE_NOT_FOUND
+            message: Resource not found
+    BadRequest:
+      description: Bad Request - Invalid input data
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: INVALID_REQUEST
+            message: Invalid request format
+  parameters:
+    Id:
+      name: id
+      in: path
+      description: Resource ID
+      required: true
+      schema:
+        $ref: '#/components/schemas/ObjectId'

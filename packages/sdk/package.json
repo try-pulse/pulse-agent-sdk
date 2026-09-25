@@ -1,0 +1,30 @@
+{
+  "name": "@pulse/agent-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Pulse agent apps: webhook verification, the Agent Session API, OAuth install and token refresh.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-reporter=spec 'dist/test/*.test.js'",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  }
+}

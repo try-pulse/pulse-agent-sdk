@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.tokens.json
+.pulse-*.json
+.DS_Store
+*.log
+*.tsbuildinfo
