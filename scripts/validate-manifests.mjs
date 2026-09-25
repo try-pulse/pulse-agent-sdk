@@ -1,5 +1,4 @@
-// Validates every sample manifest against the vendored agent-app manifest schema, and checks
-// the schema still refuses what it must (admin, http redirect, public, app-only events).
+// Validates the source schema's own examples and checks that it still refuses invalid apps.
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { readFileSync } from "node:fs";
@@ -12,20 +11,19 @@ const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
 const validate = ajv.compile(schema);
 
-const manifests = ["examples/scout/pulse-agent-app.json", "examples/claude-managed-agents/pulse-agent-app.json"];
 let failed = false;
-for (const rel of manifests) {
-  const doc = JSON.parse(readFileSync(join(root, rel), "utf8"));
+for (const [index, doc] of schema.examples.entries()) {
   if (validate(doc)) {
-    console.log(`valid: ${rel}`);
+    console.log(`valid: schema example ${index + 1}`);
   } else {
     failed = true;
-    console.error(`INVALID: ${rel}`);
+    console.error(`INVALID: schema example ${index + 1}`);
     for (const e of validate.errors ?? []) console.error(`  ${e.instancePath || "/"} ${e.message}`);
   }
 }
 
-const base = JSON.parse(readFileSync(join(root, manifests[0]), "utf8"));
+const base = schema.examples[0];
+if (!base) throw new Error("manifest schema has no positive example");
 const mustFail = {
   "admin scope": { ...base, oauth: { ...base.oauth, scopes: ["read", "admin"] } },
   "http redirect": { ...base, oauth: { ...base.oauth, redirect_uris: ["http://scout.example.com/cb"] } },

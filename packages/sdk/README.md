@@ -7,8 +7,8 @@ runtime dependencies.
 ## Wire an agent
 
 Inside this repository, run `npm ci && npm run build` first. The following creates the SDK
-objects used by an HTTP server; [Scout](../../examples/scout/src/main.ts) shows complete routes
-for OAuth and webhooks.
+objects used by an HTTP server. The standalone `pulse-agent-scout` repository shows complete
+routes for OAuth and webhooks.
 
 ```ts
 import {
@@ -103,7 +103,7 @@ other API routes. SDK types are generated from the scoped pulse-api and Agent Se
   Activity writes reuse one `Idempotency-Key` across attempts. Proactive issue session
   creation is not retried after a 5xx.
 - `JsonFileTokenStore`, `MemoryDedupeStore`, `InstallFlow` state, and `SessionStops` are
-  local to one process. The sample runs one process. For several replicas, use a shared
+  local to one process. For several replicas, use a shared
   `TokenStore` and `DedupeStore`, coordinate OAuth state and session ownership, and durably
   queue work after webhook acknowledgement. The SDK's in-process refresh lock does not
   coordinate token rotation across replicas.

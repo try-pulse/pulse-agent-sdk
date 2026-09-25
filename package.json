@@ -7,8 +7,7 @@
     "node": ">=22"
   },
   "workspaces": [
-    "packages/sdk",
-    "examples/scout"
+    "packages/sdk"
   ],
   "scripts": {
     "generate": "node scripts/generate-types.mjs",
@@ -16,10 +15,9 @@
     "specs:sync": "node scripts/sync-specs.mjs",
     "manifests:check": "node scripts/validate-manifests.mjs",
     "package:smoke": "node scripts/package-smoke.mjs",
-    "build": "npm run build --workspaces",
-    "test": "node --test scripts/test/*.test.mjs && npm test --workspace @pulse/agent-sdk && npm test --workspace @pulse/agent-sdk-example-scout && npm run manifests:check",
-    "check": "npm run types:check && npm test",
-    "start:scout": "npm start --workspace @pulse/agent-sdk-example-scout"
+    "build": "npm run build --workspace @pulse/agent-sdk",
+    "test": "node --test scripts/test/*.test.mjs && npm test --workspace @pulse/agent-sdk && npm run manifests:check",
+    "check": "npm run types:check && npm test"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

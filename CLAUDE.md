@@ -1,6 +1,6 @@
 # CLAUDE.md — pulse-agent-sdk
 
-TypeScript SDK and sample agents for Pulse **agent apps** (third-party agents that a workspace
+TypeScript SDK for Pulse **agent apps** (third-party agents that a workspace
 admin installs, that receive agent sessions over signed webhooks and answer through the Agent
 Session API). Project "Third-party Agent Apps", story PUL-929, sub-issue PUL-929-4. The
 normative contract is the project main document ("Contract v2"); this repo implements the
@@ -13,24 +13,24 @@ developer side of it and never defines wire shapes of its own.
 | `specs/` | SDK-scoped pulse-api snapshot, pulse-agent `agent-sessions.yaml`, manifest JSON Schema. `SOURCES.md` records revisions. |
 | `packages/sdk/` | `@pulse/agent-sdk` — zero runtime dependencies (node:crypto + fetch) |
 | `packages/sdk/src/generated/` | Types generated from `specs/`. **Never edit.** |
-| `examples/scout/` | Deterministic sample (no LLM), in the npm workspace, tested against a fake Pulse |
-| `examples/claude-managed-agents/` | Bun port of `linear/claude-managed-agents-demo`; **not** in the npm workspace (own `bun.lock`) |
-| `scripts/` | Contract extraction/checks, type generation, manifest validation, packed consumer smoke test |
+| `scripts/` | Contract extraction/checks, type generation, manifest schema validation, packed consumer smoke test |
+
+The standalone samples live in sibling repositories `pulse-agent-scout` and
+`pulse-claude-managed-agents-demo`. They install a packed SDK like external consumers.
 
 ## Commands
 
 ```bash
 npm ci
 npm run types:check      # generated types == specs/ (CI)
-npm test                 # SDK unit tests, Scout against a fake Pulse, manifest validation
+npm test                 # SDK unit tests and manifest schema validation
 npm run package:smoke    # install the packed SDK in an isolated consumer
 npm run specs:sync       # extract scoped spec from ../pulse-api, copy pulse-agent spec
 npm run generate         # regenerate src/generated after a sync
-cd examples/claude-managed-agents && bun install --frozen-lockfile && bun run typecheck && bun test
 ```
 
-All of these are light and safe on a laptop. Nothing here talks to a real Pulse environment;
-never point the samples at one from an agent session.
+All of these are light and safe on a laptop. Tests and package smoke checks use local fixtures
+and do not talk to a real Pulse environment.
 
 ## Invariants — each is invisible when broken
 

@@ -3,8 +3,8 @@
 Build an agent app that receives delegated issues and @mentions in Pulse, then replies with
 thoughts, actions, questions, and results through the Agent Session API.
 
-This repository contains the TypeScript SDK and two example agents. The SDK supports Node.js 22+
-and Bun, has no runtime dependencies, and derives its wire types from Pulse OpenAPI contracts.
+The SDK supports Node.js 22+ and Bun, has no runtime dependencies, and derives its wire types
+from Pulse OpenAPI contracts.
 
 ## Start here
 
@@ -16,49 +16,37 @@ npm run check
 npm run build
 ```
 
-To build an agent, use [Scout's server](examples/scout/src/main.ts) as the wiring example: it
-handles OAuth installation, verifies webhooks, stores installation tokens, and acknowledges
-deliveries before starting work. Put the agent's behavior in a callback like
-[Scout's](examples/scout/src/scout.ts). The [SDK guide](packages/sdk/README.md) explains the
-public API and error handling.
+The [SDK guide](packages/sdk/README.md) shows how to wire OAuth installation, signed webhooks,
+token storage, and session responses into your HTTP server.
 
-## Run Scout
+## Sample agents
 
-Scout is deterministic and needs no model key. Register its
-[manifest](examples/scout/pulse-agent-app.json) in Pulse after changing the redirect and webhook
-URLs to your public HTTPS `BASE_URL`. Keep the client ID, client secret, and webhook secret
-returned by registration.
+Complete agents live in separate sibling repositories. Each has its own README, dependency
+installation, tests, and runtime configuration:
 
-```bash
-cp examples/scout/.env.example examples/scout/.env
-# Fill in PULSE_CLIENT_ID, PULSE_CLIENT_SECRET, PULSE_WEBHOOK_SECRET,
-# INSTALL_SECRET, and BASE_URL in examples/scout/.env.
-set -a; . examples/scout/.env; set +a
-npm start --workspace @pulse/agent-sdk-example-scout
-```
+| Repository | Purpose |
+| --- | --- |
+| `pulse-agent-scout` | Deterministic Node.js agent with a fake Pulse test path |
+| `pulse-claude-managed-agents-demo` | Bun bridge to Claude Managed Agents |
 
-Open `<BASE_URL>/oauth/authorize?install_secret=<INSTALL_SECRET>` as a workspace admin, approve
-the installation, then delegate an issue or @mention Scout. The
-[Scout guide](examples/scout/README.md) covers its behavior, Docker image, and fake Pulse tests.
+With all three repositories checked out side by side, find them at `../pulse-agent-scout` and
+`../pulse-claude-managed-agents-demo`. They consume the packed SDK as external apps.
 
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
 | [`packages/sdk`](packages/sdk) | Webhook handler, Agent Session client, OAuth flow, token management |
-| [`examples/scout`](examples/scout) | Tested Node.js sample with no LLM |
-| [`examples/claude-managed-agents`](examples/claude-managed-agents) | Bun bridge to Claude Managed Agents |
 | [`specs`](specs) | SDK-scoped OpenAPI snapshot, Agent Session spec, manifest schema, source revisions |
-
-The Claude bridge has its own Bun lockfile. In that directory, run `bun install --frozen-lockfile`,
-`bun run typecheck`, and `bun test`. See its [setup guide](examples/claude-managed-agents/README.md).
+| [`scripts`](scripts) | Contract extraction, type generation, schema checks, packed consumer test |
 
 ## Development
 
 ```bash
 npm run types:check   # scoped contract and generated types match
-npm run check         # contract, script, SDK, Scout, and manifest tests
+npm run check         # contract, script, SDK, and manifest schema tests
 npm run package:smoke # pack, install, import, and typecheck as a consumer
+cd packages/sdk && npm pack --dry-run
 ```
 
 Contract snapshots come from Pulse's source repositories. Update them with `npm run specs:sync`
