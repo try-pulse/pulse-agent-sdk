@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a reproducible SDK defect
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security vulnerability, use the private reporting route in SECURITY.md instead of this public form. Remove tokens, webhook secrets, and personal data from examples and logs.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and the behavior you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest safe code or fixture that reproduces the issue.
+    validations:
+      required: true
+  - type: input
+    id: sdk-version
+    attributes:
+      label: SDK version or commit
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime and version
+      placeholder: "Node 22 or Bun 1.4"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redact all credentials and personal data before posting.
+      render: shell

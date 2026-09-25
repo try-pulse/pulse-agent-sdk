@@ -10,6 +10,8 @@
     "packages/sdk"
   ],
   "scripts": {
+    "changeset": "changeset",
+    "version:prepare": "changeset version",
     "generate": "node scripts/generate-types.mjs",
     "types:check": "node scripts/check-sdk-spec.mjs && node scripts/generate-types.mjs --check",
     "specs:sync": "node scripts/sync-specs.mjs",
@@ -20,6 +22,7 @@
     "check": "npm run types:check && npm test"
   },
   "devDependencies": {
+    "@changesets/cli": "3.0.3",
     "@types/node": "^22.10.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",

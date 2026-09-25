@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "TypeScript SDK for Pulse agent apps: webhook verification, the Agent Session API, OAuth install and token refresh.",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/try-pulse/pulse-agent-sdk.git",
+    "directory": "packages/sdk"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"

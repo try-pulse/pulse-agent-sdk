@@ -1,0 +1,69 @@
+name: Release SDK
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Manual releases must select main; tag releases must match the package version.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      # npm trusted publishing requires npm >=11.5.1 and Node >=22.14.0.
+      - name: Prepare npm for trusted publishing
+        run: |
+          node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 14)) throw new Error("Node >=22.14.0 is required for npm trusted publishing")'
+          # The npm 10 hop also avoids the Node 22.22.2 bundled-npm upgrade issue.
+          npm install -g npm@10
+          npm install -g npm@11.19.1
+          npm --version
+      - run: npm ci
+      - run: npm run check
+      - run: npm run package:smoke
+      - name: Verify release metadata
+        run: |
+          npm run version:prepare
+          test -z "$(git status --porcelain)" || { echo 'Commit the Changesets version and changelog updates before release.'; exit 1; }
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const pkg = JSON.parse(readFileSync("packages/sdk/package.json", "utf8"));
+            const expected = `v${pkg.version}`;
+            if (process.env.GITHUB_REF_TYPE === "tag" && process.env.GITHUB_REF_NAME !== expected) {
+              throw new Error(`Release tag must be ${expected}`);
+            }
+            if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pkg.version)) {
+              throw new Error(`Invalid package version: ${pkg.version}`);
+            }
+            const repository = pkg.repository?.url?.replace(/^git\+/, "").replace(/\.git$/, "");
+            const expectedRepository = `https://github.com/${process.env.GITHUB_REPOSITORY}`;
+            if (repository !== expectedRepository) {
+              throw new Error(`Set packages/sdk/package.json repository.url to ${expectedRepository}.git before release`);
+            }
+          '
+      # npmjs.com must trust this repository and the exact workflow filename release.yml.
+      # Allow direct npm publish in that trusted publisher configuration; no npm token is used.
+      - name: Publish with npm OIDC and provenance
+        run: npm publish --workspace @pulse/agent-sdk --access public --provenance

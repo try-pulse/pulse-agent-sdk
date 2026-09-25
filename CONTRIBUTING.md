@@ -23,9 +23,10 @@ SDK's pulse-api surface and records source revisions in [`specs/SOURCES.md`](spe
 Do not edit `packages/sdk/src/generated/` or add hand-written wire fields in
 `packages/sdk/src/types.ts`.
 
-Keep webhook verification over the raw signed body, acknowledge promptly, reuse one idempotency
-key across activity retries, and never retry `409 SESSION_ENDED`. These behaviors have focused
-tests and are part of the SDK contract.
+Verify `Pulse-Signature` over the raw body and use its signed `webhook_timestamp` for freshness;
+the `Pulse-Timestamp` header is not signed. Acknowledge webhooks within 5 seconds, reuse one
+`Idempotency-Key` across activity retries, and never retry `409 SESSION_ENDED`. These behaviors
+have focused tests and are part of the SDK contract.
 
 ## Pull requests
 
