@@ -62,7 +62,4 @@ and do not talk to a real Pulse environment.
 
 ## Git
 
-- The current `origin` is GitLab. GitHub is the intended development home; do not push as
-  part of repository cleanup.
-- Never create branches. Commit to the checked-out branch; the owner pushes.
 - Conventional Commits (`type(scope): subject`).

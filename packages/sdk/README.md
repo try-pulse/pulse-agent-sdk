@@ -1,17 +1,23 @@
 # @pulse/agent-sdk
 
-TypeScript SDK for Pulse agent apps on Node.js 22+ or Bun. It verifies signed webhooks, manages
-OAuth app installations and rotating tokens, and writes to the Agent Session API. It has no
-runtime dependencies. Pulse currently installs a private app only in the workspace where it was
-registered.
+TypeScript SDK for Pulse agent apps on Node.js 22+ or Bun. Install the package
+`@pulse/agent-sdk`. It verifies signed webhooks, manages OAuth app installations and rotating
+tokens, and writes to the Agent Session API. It has no runtime dependencies. Pulse currently
+installs a private app only in the workspace where it was registered.
+
+## Install
+
+```bash
+npm install @pulse/agent-sdk
+```
 
 ## Wire an agent
 
-Inside this repository, run `npm ci && npm run build` first. Register an app with a person’s
-session in Pulse, using a manifest whose OAuth redirect and webhook URLs point to your server.
-Registration returns the client secret (`pulse_sk_…`) and webhook secret (`pwhsec_…`) once. An
-app token cannot register an app. The following creates the SDK objects used by an HTTP server;
-the standalone `pulse-agent-scout` repository shows complete routes for OAuth and webhooks.
+Register an app with a person’s session in Pulse, using a manifest whose OAuth redirect and
+webhook URLs point to your server. Registration returns the client secret (`pulse_sk_…`) and
+webhook secret (`pwhsec_…`) once. An app token cannot register an app. The following creates
+the SDK objects used by an HTTP server; the standalone `pulse-agent-scout` repository shows
+complete routes for OAuth and webhooks.
 
 ```ts
 import {
@@ -83,15 +89,18 @@ The install flow sends the admin through OAuth with `actor=app`, PKCE S256 and a
 `state`. It stores tokens by `installation_id`; the client sends the app's bearer token and
 `X-Workspace-ID` on API calls. Keep the install endpoint behind `INSTALL_SECRET`.
 
-Use the raw request body for webhook verification. `Pulse-Signature` is lowercase hex
-HMAC-SHA256 over those bytes with the full `pwhsec_…` secret, without a `sha256=` prefix.
-The SDK checks the **signed body** `webhook_timestamp` within 60 seconds; the
+Pulse sends `created` when a person delegates an issue or @mentions the app, and `prompted`
+for a follow-up or Stop. Use the raw request body for webhook verification. `Pulse-Signature`
+is lowercase hex HMAC-SHA256 over those bytes with the full `pwhsec_…` secret, without a
+`sha256=` prefix. The SDK checks the **signed body** `webhook_timestamp` within 60 seconds; the
 `Pulse-Timestamp` header is not signed. The handler returns 200 after verification and
 dispatches callbacks asynchronously, deduplicating by `data.event_id`. Acknowledge each
 delivery within 5 seconds and post a first `thought` or external URL within 10 seconds of
-`created`. Callbacks should observe their `signal`: `elicitation` pauses for input, `response`
-completes a run, and `error` reports a blocker. On `prompted`, inspect the Stop signal; a Stop
-asks for one final `response` or `error` within 60 seconds.
+`created`. A session left in `pending` or `active` for 30 minutes with no activity from the
+app becomes `stale`; posting any activity recovers it. Callbacks should observe their
+`signal`: `elicitation` pauses for input, `response` completes a run, and `error` reports a
+blocker. On `prompted`, inspect the Stop signal; a Stop asks for one final `response` or
+`error` within 60 seconds.
 
 ## Public surface
 
@@ -122,3 +131,15 @@ other API routes. SDK types are generated from the scoped pulse-api and Agent Se
   `TokenStore` and `DedupeStore`, coordinate OAuth state and session ownership, and durably
   queue work after webhook acknowledgement. The SDK's in-process refresh lock does not
   coordinate token rotation across replicas.
+
+## Building in this repository
+
+From a checkout of this repository, install dependencies and compile before using the package
+locally. Run both commands from the repository root:
+
+```bash
+npm ci
+npm run build
+```
+
+`npm run build` compiles `@pulse/agent-sdk` with `tsc`.
