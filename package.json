@@ -17,8 +17,8 @@
     "specs:sync": "node scripts/sync-specs.mjs",
     "manifests:check": "node scripts/validate-manifests.mjs",
     "package:smoke": "node scripts/package-smoke.mjs",
-    "build": "npm run build --workspace @pulse/agent-sdk",
-    "test": "node --test scripts/test/*.test.mjs && npm test --workspace @pulse/agent-sdk && npm run manifests:check",
+    "build": "npm run build --workspace @try-pulse/agent-sdk",
+    "test": "node --test scripts/test/*.test.mjs && npm test --workspace @try-pulse/agent-sdk && npm run manifests:check",
     "check": "npm run types:check && npm test"
   },
   "devDependencies": {

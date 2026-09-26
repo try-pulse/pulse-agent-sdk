@@ -11,7 +11,7 @@ shapes of its own.
 | Path | What |
 | --- | --- |
 | `specs/` | SDK-scoped pulse-api snapshot, pulse-agent `agent-sessions.yaml`, manifest JSON Schema. `SOURCES.md` records revisions. |
-| `packages/sdk/` | `@pulse/agent-sdk` — zero runtime dependencies (node:crypto + fetch) |
+| `packages/sdk/` | `@try-pulse/agent-sdk` — zero runtime dependencies (node:crypto + fetch) |
 | `packages/sdk/src/generated/` | Types generated from `specs/`. **Never edit.** |
 | `scripts/` | Contract extraction/checks, type generation, manifest schema validation, packed consumer smoke test |
 

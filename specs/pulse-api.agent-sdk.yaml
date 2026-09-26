@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: Pulse Agent SDK API
   version: 1.0.0
-  description: The pulse-api operations and webhook types used by @pulse/agent-sdk.
+  description: The pulse-api operations and webhook types used by @try-pulse/agent-sdk.
 servers:
   - url: https://api.trypulse.tech/api/v1
 security:
@@ -1209,7 +1209,7 @@ components:
             - system
         name:
           type: string
-          example: Alireza Attari
+          example: Ada Lovelace
     WebhookCommentData:
       type: object
       description: A comment on an issue or project. Internal comments are never delivered.

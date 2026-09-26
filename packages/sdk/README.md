@@ -1,14 +1,14 @@
-# @pulse/agent-sdk
+# @try-pulse/agent-sdk
 
 TypeScript SDK for Pulse agent apps on Node.js 22+ or Bun. Install the package
-`@pulse/agent-sdk`. It verifies signed webhooks, manages OAuth app installations and rotating
+`@try-pulse/agent-sdk`. It verifies signed webhooks, manages OAuth app installations and rotating
 tokens, and writes to the Agent Session API. It has no runtime dependencies. Pulse currently
 installs a private app only in the workspace where it was registered.
 
 ## Install
 
 ```bash
-npm install @pulse/agent-sdk
+npm install @try-pulse/agent-sdk
 ```
 
 ## Wire an agent
@@ -27,7 +27,7 @@ import {
   SessionStops,
   TokenManager,
   createWebhookHandler,
-} from "@pulse/agent-sdk";
+} from "@try-pulse/agent-sdk";
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -142,4 +142,4 @@ npm ci
 npm run build
 ```
 
-`npm run build` compiles `@pulse/agent-sdk` with `tsc`.
+`npm run build` compiles `@try-pulse/agent-sdk` with `tsc`.

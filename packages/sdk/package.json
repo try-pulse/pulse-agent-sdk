@@ -1,5 +1,5 @@
 {
-  "name": "@pulse/agent-sdk",
+  "name": "@try-pulse/agent-sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for Pulse agent apps: webhook verification, the Agent Session API, OAuth install and token refresh.",
   "license": "MIT",

@@ -45,7 +45,7 @@ export function createSdkSpec(source, { operations = SDK_OPERATIONS, schemas = S
     info: {
       title: "Pulse Agent SDK API",
       version: source.info.version,
-      description: "The pulse-api operations and webhook types used by @pulse/agent-sdk.",
+      description: "The pulse-api operations and webhook types used by @try-pulse/agent-sdk.",
     },
     servers: [{ url: "https://api.trypulse.tech/api/v1" }],
     ...(source.security && { security: source.security }),

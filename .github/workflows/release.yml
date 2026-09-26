@@ -66,4 +66,4 @@ jobs:
       # npmjs.com must trust this repository and the exact workflow filename release.yml.
       # Allow direct npm publish in that trusted publisher configuration; no npm token is used.
       - name: Publish with npm OIDC and provenance
-        run: npm publish --workspace @pulse/agent-sdk --access public --provenance
+        run: npm publish --workspace @try-pulse/agent-sdk --access public --provenance

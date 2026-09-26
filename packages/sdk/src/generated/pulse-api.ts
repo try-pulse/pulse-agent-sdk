@@ -577,7 +577,7 @@ export interface components {
             id: string;
             /** @enum {string} */
             type: "user" | "application" | "system";
-            /** @example Alireza Attari */
+            /** @example Ada Lovelace */
             name: string;
         } | null;
         /** @description A comment on an issue or project. Internal comments are never delivered. */

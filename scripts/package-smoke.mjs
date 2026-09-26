@@ -14,8 +14,8 @@ function run(bin, args, cwd = root) {
 }
 
 try {
-  run(npm, ["run", "build", "--workspace", "@pulse/agent-sdk"]);
-  const packed = JSON.parse(run(npm, ["pack", "--workspace", "@pulse/agent-sdk", "--pack-destination", temp, "--json"]))[0];
+  run(npm, ["run", "build", "--workspace", "@try-pulse/agent-sdk"]);
+  const packed = JSON.parse(run(npm, ["pack", "--workspace", "@try-pulse/agent-sdk", "--pack-destination", temp, "--json"]))[0];
   const packageFiles = packed.files.map((file) => file.path);
   if (packageFiles.some((path) => path.includes("/test/") || path.includes("/internal/"))) {
     throw new Error("package contains test or internal files");
@@ -24,7 +24,7 @@ try {
   writeFileSync(join(temp, "package.json"), '{"type":"module","private":true}\n');
   run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", join(temp, packed.filename)], temp);
   writeFileSync(join(temp, "consumer.mts"), `
-import { PulseAgentClient, createWebhookHandler, type AgentSession } from "@pulse/agent-sdk";
+import { PulseAgentClient, createWebhookHandler, type AgentSession } from "@try-pulse/agent-sdk";
 const client = new PulseAgentClient({ workspaceId: "workspace", tokenProvider: async () => "token" });
 const handler = createWebhookHandler({ secret: "test-secret" });
 const session: AgentSession | undefined = undefined;
@@ -40,7 +40,7 @@ if (!client.me || !handler.handle) throw new Error("missing public SDK exports")
   }));
   run(node, [join(root, "node_modules/typescript/bin/tsc"), "-p", temp]);
   const runtime = run(node, ["--input-type=module", "-e",
-    'import { PulseAgentClient, createWebhookHandler } from "@pulse/agent-sdk"; if (!PulseAgentClient || !createWebhookHandler) process.exit(1);',
+    'import { PulseAgentClient, createWebhookHandler } from "@try-pulse/agent-sdk"; if (!PulseAgentClient || !createWebhookHandler) process.exit(1);',
   ], temp);
   if (runtime) process.stdout.write(runtime + "\n");
   console.log(`ok: packed ${packed.name}@${packed.version} imports and typechecks in an isolated consumer`);
