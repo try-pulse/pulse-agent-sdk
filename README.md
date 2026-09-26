@@ -24,16 +24,13 @@ full wire contract, see the [Pulse agent app docs](https://trypulse.tech/docs/de
 
 ## Sample agents
 
-Complete agents live in separate sibling repositories. Each has its own README, dependency
-installation, tests, and runtime configuration:
+Complete agents live in their own repositories. Each installs `@try-pulse/agent-sdk` from npm
+and has its own README, setup steps and tests:
 
 | Repository | Purpose |
 | --- | --- |
-| `pulse-agent-scout` | Deterministic Node.js agent with a fake Pulse test path |
-| `pulse-claude-managed-agents-demo` | Bun bridge to Claude Managed Agents |
-
-With all three repositories checked out side by side, find them at `../pulse-agent-scout` and
-`../pulse-claude-managed-agents-demo`. They consume the packed SDK as external apps.
+| [`pulse-agent-scout`](https://github.com/try-pulse/pulse-agent-scout) | Deterministic Node.js agent, no LLM: the quickest way to see the whole flow |
+| [`pulse-claude-managed-agents-demo`](https://github.com/try-pulse/pulse-claude-managed-agents-demo) | Bun bridge from Pulse agent sessions to Claude Managed Agents |
 
 ## Repository map
 

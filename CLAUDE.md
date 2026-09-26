@@ -15,8 +15,8 @@ shapes of its own.
 | `packages/sdk/src/generated/` | Types generated from `specs/`. **Never edit.** |
 | `scripts/` | Contract extraction/checks, type generation, manifest schema validation, packed consumer smoke test |
 
-The standalone samples live in sibling repositories `pulse-agent-scout` and
-`pulse-claude-managed-agents-demo`. They install a packed SDK like external consumers.
+The samples live in their own repositories, `try-pulse/pulse-agent-scout` and
+`try-pulse/pulse-claude-managed-agents-demo`, and install the SDK from npm like any consumer.
 
 ## Commands
 
