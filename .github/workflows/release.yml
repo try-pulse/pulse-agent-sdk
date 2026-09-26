@@ -45,8 +45,13 @@ jobs:
       - run: npm run package:smoke
       - name: Verify release metadata
         run: |
-          npm run version:prepare
-          test -z "$(git status --porcelain)" || { echo 'Commit the Changesets version and changelog updates before release.'; exit 1; }
+          # `changeset version` must already have run and been committed: an unconsumed changeset
+          # means the version and changelog in this tag are not the ones being released.
+          pending="$(find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md')"
+          if [ -n "$pending" ]; then
+            echo "Run npm run version:prepare and commit the result before release. Pending: $pending"
+            exit 1
+          fi
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
             const pkg = JSON.parse(readFileSync("packages/sdk/package.json", "utf8"));
