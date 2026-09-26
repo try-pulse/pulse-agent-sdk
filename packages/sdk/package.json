@@ -1,7 +1,18 @@
 {
   "name": "@try-pulse/agent-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript SDK for Pulse agent apps: webhook verification, the Agent Session API, OAuth install and token refresh.",
+  "keywords": [
+    "pulse",
+    "agent",
+    "agents",
+    "ai-agent",
+    "agent-sdk",
+    "webhooks",
+    "oauth",
+    "typescript",
+    "sdk"
+  ],
   "license": "MIT",
   "homepage": "https://github.com/try-pulse/pulse-agent-sdk",
   "bugs": {
@@ -26,7 +37,9 @@
   },
   "files": [
     "dist/src",
-    "README.md"
+    "src",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

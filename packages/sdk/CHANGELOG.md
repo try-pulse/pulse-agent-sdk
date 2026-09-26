@@ -1,5 +1,11 @@
 # @try-pulse/agent-sdk
 
+## 0.1.1
+
+### Patch Changes
+
+- Ship the TypeScript sources and declaration maps, so source maps and "go to definition" resolve into the SDK's code, and include this changelog in the package.
+
 ## 0.1.0
 
 ### Minor Changes

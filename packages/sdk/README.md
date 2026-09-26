@@ -1,5 +1,9 @@
 # @try-pulse/agent-sdk
 
+[![npm](https://img.shields.io/npm/v/@try-pulse/agent-sdk)](https://www.npmjs.com/package/@try-pulse/agent-sdk)
+[![CI](https://github.com/try-pulse/pulse-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/try-pulse/pulse-agent-sdk/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/try-pulse/pulse-agent-sdk/blob/main/LICENSE)
+
 TypeScript SDK for Pulse agent apps on Node.js 22+ or Bun. Install the package
 `@try-pulse/agent-sdk`. It verifies signed webhooks, manages OAuth app installations and rotating
 tokens, and writes to the Agent Session API. It has no runtime dependencies. Pulse currently

@@ -1,5 +1,9 @@
 # Pulse Agent SDK
 
+[![npm](https://img.shields.io/npm/v/@try-pulse/agent-sdk)](https://www.npmjs.com/package/@try-pulse/agent-sdk)
+[![CI](https://github.com/try-pulse/pulse-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/try-pulse/pulse-agent-sdk/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/try-pulse/pulse-agent-sdk/blob/main/LICENSE)
+
 Build an agent app that receives delegated issues and @mentions in Pulse, then replies with
 `thought`, `action`, `elicitation`, `response`, and `error` activities through the Agent Session API.
 Pulse sends `AgentSessionEvent` / `created` for a new session and `prompted` for follow-ups and
