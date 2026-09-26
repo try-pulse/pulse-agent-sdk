@@ -2,9 +2,9 @@
 
 TypeScript SDK for Pulse **agent apps** (third-party agents that a workspace
 admin installs, that receive agent sessions over signed webhooks and answer through the Agent
-Session API). Project "Third-party Agent Apps", story PUL-929, sub-issue PUL-929-4. The
-normative contract is the project main document ("Contract v2"); this repo implements the
-developer side of it and never defines wire shapes of its own.
+Session API). The normative contract is Pulse's OpenAPI for agent apps and the Agent Session API
+(vendored in `specs/`); this repo implements the developer side of it and never defines wire
+shapes of its own.
 
 ## Layout
 
@@ -25,7 +25,7 @@ npm ci
 npm run types:check      # generated types == specs/ (CI)
 npm test                 # SDK unit tests and manifest schema validation
 npm run package:smoke    # install the packed SDK in an isolated consumer
-npm run specs:sync       # extract scoped spec from ../pulse-api, copy pulse-agent spec
+npm run specs:sync       # maintainers: needs the Pulse service repos checked out beside this one
 npm run generate         # regenerate src/generated after a sync
 ```
 
@@ -51,8 +51,7 @@ and do not talk to a real Pulse environment.
 - **Stop handling lives in `src/stop.ts` only.** Two paths, both final: `prompted` with
   `agent_activity.signal === "stop"` (abort, then one final response/error), and
   `409 SESSION_ENDED` on any write (abort, post nothing, never retry). Uninstall, team removal
-  and issue deletion reach the app only as the second path (owner confirmation pending on the
-  contract; keep both paths working so either outcome needs no SDK change).
+  and issue deletion end the session at once and reach the app only as the second path.
 - **Idempotency-Key is minted once per activity call, before the first attempt**, and reused on
   every retry (≤ 64 chars). Proactive `createOnIssue` is not retried on 5xx (no key on that route).
 - **OAuth Basic credentials are raw `id:secret`**, not form-encoded: pulse-api reads them with
