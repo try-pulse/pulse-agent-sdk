@@ -48,8 +48,7 @@ export interface paths {
          *     must be an owner or admin of the app's developer workspace (the only workspace a v1 private app installs
          *     into) and chooses the teams the app covers. The grant belongs to the app's own application user, and the
          *     tokens act as the app (see `POST /oauth/token`). Refusals redirect to `redirect_uri` with:
-         *     - `error=unsupported_actor`: `actor=app` from a client that is not an agent app, or agent apps are not
-         *       enabled for the workspace.
+         *     - `error=unsupported_actor`: `actor=app` from a client that is not an agent app.
          *     - `error=invalid_scope`: `admin` was requested with `actor=app`, or an `app:*` scope without `actor=app`.
          */
         get: operations["oauthAuthorize"];
@@ -441,7 +440,7 @@ export interface components {
         /** @description RFC 6749 error shape used by the OAuth endpoints. `insufficient_scope` never appears here; it is sent only in `WWW-Authenticate` on a `403 INSUFFICIENT_SCOPE` from an API route. */
         OAuthError: {
             /**
-             * @description `invalid_request`, `invalid_client`, `invalid_grant`, `invalid_scope`, `unauthorized_client`, `unsupported_grant_type`, `access_denied`, or `unsupported_actor` (`actor=app` from a client that is not an agent app, or agent apps are off for the workspace).
+             * @description `invalid_request`, `invalid_client`, `invalid_grant`, `invalid_scope`, `unauthorized_client`, `unsupported_grant_type`, `access_denied`, or `unsupported_actor` (`actor=app` from a client that is not an agent app).
              * @example unsupported_actor
              */
             error: string;
@@ -1977,7 +1976,7 @@ export interface components {
         AgentSessionState: "pending" | "active" | "awaitingInput" | "error" | "complete" | "stale" | "stopping";
     };
     responses: {
-        /** @description Insufficient permissions (`FORBIDDEN`), a missing OAuth scope (`INSUFFICIENT_SCOPE`, see InsufficientScope), or a status an agent app may not set (`APP_STATUS_FORBIDDEN`). An agent app token may create an issue only in `backlog`, `todo`, `in_progress` or `qa`, and may change an issue's status only to `in_progress` or `qa`; closing (`release`, `done`) stays with a person. */
+        /** @description Insufficient permissions (`FORBIDDEN`), a missing OAuth scope (`INSUFFICIENT_SCOPE`, see InsufficientScope), a team where the caller may not create issues (`TEAM_ACCESS_FORBIDDEN`: creating an issue in it, or moving an issue into it), or a status an agent app may not set (`APP_STATUS_FORBIDDEN`). An agent app token may create an issue only in `backlog`, `todo`, `in_progress` or `qa`, and may change an issue's status only to `in_progress` or `qa`; closing (`release`, `done`) stays with a person. */
         IssueWriteForbidden: {
             headers: {
                 [name: string]: unknown;

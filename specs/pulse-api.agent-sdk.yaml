@@ -60,8 +60,8 @@ paths:
 
         tokens act as the app (see `POST /oauth/token`). Refusals redirect to `redirect_uri` with:
 
-        - `error=unsupported_actor`: `actor=app` from a client that is not an agent app, or agent apps are not
-          enabled for the workspace.
+        - `error=unsupported_actor`: `actor=app` from a client that is not an agent app.
+
         - `error=invalid_scope`: `admin` was requested with `actor=app`, or an `app:*` scope without `actor=app`.
       operationId: oauthAuthorize
       security: []
@@ -970,7 +970,7 @@ components:
           description: >-
             `invalid_request`, `invalid_client`, `invalid_grant`, `invalid_scope`, `unauthorized_client`,
             `unsupported_grant_type`, `access_denied`, or `unsupported_actor` (`actor=app` from a client that is not an
-            agent app, or agent apps are off for the workspace).
+            agent app).
           example: unsupported_actor
         error_description:
           type: string
@@ -3949,10 +3949,11 @@ components:
   responses:
     IssueWriteForbidden:
       description: >
-        Insufficient permissions (`FORBIDDEN`), a missing OAuth scope (`INSUFFICIENT_SCOPE`, see InsufficientScope), or
-        a status an agent app may not set (`APP_STATUS_FORBIDDEN`). An agent app token may create an issue only in
-        `backlog`, `todo`, `in_progress` or `qa`, and may change an issue's status only to `in_progress` or `qa`;
-        closing (`release`, `done`) stays with a person.
+        Insufficient permissions (`FORBIDDEN`), a missing OAuth scope (`INSUFFICIENT_SCOPE`, see InsufficientScope), a
+        team where the caller may not create issues (`TEAM_ACCESS_FORBIDDEN`: creating an issue in it, or moving an
+        issue into it), or a status an agent app may not set (`APP_STATUS_FORBIDDEN`). An agent app token may create an
+        issue only in `backlog`, `todo`, `in_progress` or `qa`, and may change an issue's status only to `in_progress`
+        or `qa`; closing (`release`, `done`) stays with a person.
       content:
         application/json:
           schema:
@@ -3962,6 +3963,10 @@ components:
               value:
                 code: FORBIDDEN
                 message: Insufficient permissions to access this resource
+            teamAccessForbidden:
+              value:
+                code: TEAM_ACCESS_FORBIDDEN
+                message: You can't create issues in this team
             appStatusForbidden:
               value:
                 code: APP_STATUS_FORBIDDEN
