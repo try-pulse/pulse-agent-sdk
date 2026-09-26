@@ -20,8 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read
-      id-token: write
+      contents: write # create the GitHub release
+      id-token: write # npm trusted publishing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,5 +65,29 @@ jobs:
           '
       # npmjs.com must trust this repository and the exact workflow filename release.yml.
       # Allow direct npm publish in that trusted publisher configuration; no npm token is used.
+      # A version already on npm is skipped, so re-running a release (or tagging one that was
+      # published by hand) only creates the missing GitHub release.
       - name: Publish with npm OIDC and provenance
-        run: npm publish --workspace @try-pulse/agent-sdk --access public --provenance
+        run: |
+          version="$(node -p 'require("./packages/sdk/package.json").version')"
+          if npm view "@try-pulse/agent-sdk@${version}" version >/dev/null 2>&1; then
+            echo "@try-pulse/agent-sdk@${version} is already on npm; not publishing it again."
+          else
+            npm publish --workspace @try-pulse/agent-sdk --access public --provenance
+          fi
+      - name: Create the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists."
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## /{ if (found) exit; if ($2 == v) { found = 1; next } } found' packages/sdk/CHANGELOG.md > notes.md || true
+          if [ -s notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi

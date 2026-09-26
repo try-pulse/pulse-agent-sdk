@@ -114,7 +114,7 @@ blocker. On `prompted`, inspect the Stop signal; a Stop asks for one final `resp
 `PulseAgentClient` exposes session reads, activity writes (`thought`, `action`, `elicit`,
 `respond`, `error`), plans, external URLs, issue reads/status changes, and `request` for
 other API routes. SDK types are generated from the scoped pulse-api and Agent Session specs in
-[`specs/`](../../specs).
+[`specs/`](https://github.com/try-pulse/pulse-agent-sdk/tree/main/specs).
 
 ## Errors, retries, and storage
 
