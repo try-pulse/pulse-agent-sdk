@@ -289,3 +289,16 @@ test("a non-Ping event without installation_id is reported, not dispatched", asy
   assert.equal(created, 0);
   assert.match(String(errors[0]), /without installation_id/);
 });
+
+test("a late prompt cannot resume work after access was removed", async () => {
+  let prompted = 0;
+  const h = createWebhookHandler({ secret: SECRET, now, onSessionPrompted: () => void prompted++ });
+  h.stops.stop("sess_1", { kind: "session_ended", endReason: "team_removed" });
+  const delivery = signed(envelope({ action: "prompted" }, {
+    event_id: "late", agent_activity: { signal: null },
+  }));
+  assert.equal(h.handle(delivery.raw, delivery.headers).status, 200);
+  await h.idle();
+  assert.equal(prompted, 0);
+  assert.equal(h.stops.signal("sess_1").aborted, true);
+});

@@ -62,6 +62,7 @@ export function verifyWebhook(
   { toleranceMs = DEFAULT_TOLERANCE_MS, now = Date.now }: VerifyWebhookOptions = {},
 ): VerifyWebhookResult {
   if (!secret) throw new Error("verifyWebhook: the webhook secret is empty");
+  if (!Number.isFinite(toleranceMs) || toleranceMs < 0) throw new RangeError("Invalid webhook timestamp tolerance");
   const provided = headerValue(headers, SIGNATURE_HEADER)?.trim();
   if (!provided) return { ok: false, reason: "missing_signature" };
   // Buffer.from(hex) silently drops a bad tail, so the shape is checked first.
@@ -82,6 +83,7 @@ export function verifyWebhook(
   }
   const ts = (payload as { webhook_timestamp?: unknown } | null)?.webhook_timestamp;
   if (typeof ts !== "number" || !Number.isSafeInteger(ts)) return { ok: false, reason: "missing_timestamp" };
-  if (Math.abs(now() - ts) > toleranceMs) return { ok: false, reason: "stale_timestamp" };
+  const distance = Math.abs(now() - ts);
+  if (!Number.isFinite(distance) || distance > toleranceMs) return { ok: false, reason: "stale_timestamp" };
   return { ok: true, payload: payload as AppWebhookEnvelope };
 }

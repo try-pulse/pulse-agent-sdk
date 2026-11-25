@@ -46,7 +46,27 @@ export function occurrenceKey(payload: AppWebhookEnvelope): string {
   if (!resourceTypes.has(payload.type) || Object.hasOwn(data, "event_id")) return requiredText(data.event_id);
   const signedOccurrence = { ...payload } as Partial<AppWebhookEnvelope>;
   delete signedOccurrence.webhook_timestamp;
-  return `body:${createHash("sha256").update(canonicalJson(signedOccurrence)).digest("hex")}`;
+  try {
+    return `body:${createHash("sha256").update(canonicalJson(signedOccurrence)).digest("hex")}`;
+  } catch (err) {
+    if (err instanceof RangeError) throw new WebhookError(400, "invalid_event");
+    throw err;
+  }
+}
+
+function validateInstallationChange(type: string, action: string, installationId: string, data: Record<string, unknown>) {
+  const revoked = type === "OAuthApp" && action === "revoked";
+  const permissions = type === "PermissionChange" && action === "teamAccessChanged";
+  if ((revoked || permissions) && data.installation_id !== installationId) throw new WebhookError(400, "invalid_event");
+  if (revoked) requiredText(data.app_id);
+  if (permissions) {
+    if (typeof data.all_teams !== "boolean") throw new WebhookError(400, "invalid_event");
+    for (const field of ["team_ids", "added_team_ids", "removed_team_ids"]) {
+      const teams = data[field];
+      if (!Array.isArray(teams)) throw new WebhookError(400, "invalid_event");
+      teams.forEach(requiredText);
+    }
+  }
 }
 
 export type WebhookReceiverOptions = {
@@ -84,6 +104,7 @@ export function createWebhookReceiver(options: WebhookReceiverOptions) {
       if (type !== "Ping") {
         const installationId = requiredText(payload.installation_id);
         requiredText(payload.app_user_id);
+        validateInstallationChange(type, action, installationId, data);
         event.dedupeKey = [installationId, occurrenceKey(payload)];
         if (type === "AgentSessionEvent") {
           event.sessionId = requiredText(record(data.agent_session).id);

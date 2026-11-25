@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { InstallationRevokedError, PulseApiError } from "./errors.js";
 import { DEFAULT_BASE_URL, trimSlash } from "./oauth.js";
 import { SessionEndedError, type SessionStops } from "./stop.js";
@@ -77,11 +78,12 @@ export type ListSessionsInput = {
   state?: AgentSessionState | AgentSessionState[];
   cursor?: string;
   limit?: number;
+  signal?: AbortSignal;
 };
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
-const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const MAX_RETRY_AFTER_MS = 60_000;
 
 /**
  * The app's side of the Agent Session API plus the pulse-api calls an agent needs, as the
@@ -121,7 +123,10 @@ export class PulseAgentClient {
       ...options,
       baseUrl: tokens.apiBaseUrl,
       workspaceId: installation.workspace_id,
-      tokenProvider: (input) => tokens.getAccessToken(installationId, input),
+      tokenProvider: tokens.tokenProvider(installationId, {
+        workspace_id: installation.workspace_id,
+        app_user_id: installation.app_user_id,
+      }),
     });
   }
 
@@ -131,6 +136,7 @@ export class PulseAgentClient {
 
     list: (input: ListSessionsInput = {}) =>
       this.request<AgentSessionPage>("GET", "/agent-sessions", {
+        signal: input.signal,
         query: {
           issue_id: input.issueId,
           state: input.state === undefined ? undefined : ([] as AgentSessionState[]).concat(input.state),
@@ -163,7 +169,10 @@ export class PulseAgentClient {
           ...(opts.signal && { signal: opts.signal }),
         });
         all.push(...page.data);
-        if (!page.has_more || page.data.length === 0) return all;
+        if (!page.has_more) return all;
+        if (page.data.length === 0 || !Number.isSafeInteger(page.last_seq) || page.last_seq <= (after ?? 0)) {
+          throw new Error("Pulse activity pagination did not advance");
+        }
         after = page.last_seq;
       }
     },
@@ -273,33 +282,39 @@ export class PulseAgentClient {
       if (Array.isArray(v)) for (const item of v) url.searchParams.append(k, item);
       else url.searchParams.set(k, String(v));
     }
-    const hasKey = Object.keys(opts.headers ?? {}).some((h) => h.toLowerCase() === "idempotency-key");
+    const headers = new Headers(opts.headers);
+    const hasKey = Boolean(headers.get("idempotency-key"));
+    const body = JSON.stringify(opts.body);
+    headers.set("accept", headers.get("accept") ?? "application/json");
+    headers.set("x-workspace-id", this.workspaceId);
+    if (body !== undefined) headers.set("content-type", "application/json");
     const retryable = opts.retryable ?? (method !== "POST" || hasKey);
     const maxRetries = this.#o.maxRetries ?? 3;
-    const sleep = this.#o.sleep ?? defaultSleep;
+    const customSleep = this.#o.sleep;
+    const sleep = customSleep
+      ? (ms: number) => abortable(customSleep(ms), opts.signal)
+      : (ms: number) => delay(ms, undefined, { signal: opts.signal });
     const doFetch = this.#o.fetch ?? fetch;
-    let forceRefresh = false;
-    let refreshedOnce = false;
+    let rejectedToken: string | undefined;
+    let authRetried = false;
 
     for (let attempt = 0; ;) {
       opts.signal?.throwIfAborted();
-      const token = await this.#o.tokenProvider(forceRefresh ? { forceRefresh: true } : undefined);
-      forceRefresh = false;
-      const headers: Record<string, string> = {
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-        "x-workspace-id": this.workspaceId,
-        ...opts.headers,
-      };
-      if (opts.body !== undefined) headers["content-type"] = "application/json";
+      const token = await abortable(this.#o.tokenProvider(
+        rejectedToken !== undefined ? { forceRefresh: true, rejectedToken } : undefined,
+      ), opts.signal);
+      rejectedToken = undefined;
+      opts.signal?.throwIfAborted();
+      const attemptHeaders = new Headers(headers);
+      attemptHeaders.set("authorization", `Bearer ${token}`);
 
       let res: Response;
       try {
         res = await doFetch(url, {
           method,
           redirect: "manual",
-          headers,
-          ...(opts.body !== undefined && { body: JSON.stringify(opts.body) }),
+          headers: attemptHeaders,
+          body,
           ...(opts.signal && { signal: opts.signal }),
         });
       } catch (err) {
@@ -322,9 +337,9 @@ export class PulseAgentClient {
       }
       if (res.status === 401) {
         if (err.code === "INSTALLATION_REVOKED") throw new InstallationRevokedError(undefined, err.message);
-        if (!refreshedOnce) {
-          refreshedOnce = true;
-          forceRefresh = true;
+        if (!authRetried) {
+          authRetried = true;
+          rejectedToken = token;
           continue;
         }
         throw err;
@@ -332,7 +347,7 @@ export class PulseAgentClient {
       const again =
         attempt < maxRetries &&
         (res.status === 429 || (retryable && (res.status === 408 || (res.status >= 500 && res.status !== 501))));
-      if (!again || (err.retryAfterMs ?? 0) > 60_000) throw err;
+      if (!again || (err.retryAfterMs ?? 0) > MAX_RETRY_AFTER_MS) throw err;
       await sleep(err.retryAfterMs ?? this.#backoff(attempt));
       attempt++;
     }
@@ -350,25 +365,36 @@ function withEphemeral(activity: AgentActivityCreate, opts: ActivityOptions): Ag
 }
 
 function enc(id: string): string {
+  if (!id || id === "." || id === "..") throw new TypeError("Pulse API resource ID is invalid");
   return encodeURIComponent(id);
+}
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 async function toApiError(res: Response): Promise<PulseApiError> {
   let body: { code?: unknown; message?: unknown; details?: unknown } = {};
   try {
-    body = (await res.json()) as typeof body;
+    const parsed: unknown = await res.json();
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) body = parsed;
   } catch {
     // non-JSON error body
   }
-  const retryAfter = res.headers.get("retry-after");
-  const delay = retryAfter === null ? NaN : /^\d+$/.test(retryAfter)
-    ? Number(retryAfter) * 1_000
-    : Math.max(0, Date.parse(retryAfter) - Date.now());
+  const retryAfter = res.headers.get("retry-after") ?? "";
+  const delayMs = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 :
+    /^[A-Za-z]{3},/.test(retryAfter) ? Math.max(0, Date.parse(retryAfter) - Date.now()) : NaN;
   return new PulseApiError(
     res.status,
     typeof body.code === "string" ? body.code : `HTTP_${res.status}`,
     typeof body.message === "string" ? body.message : res.statusText,
     body.details && typeof body.details === "object" ? (body.details as Record<string, unknown>) : undefined,
-    Number.isFinite(delay) ? delay : undefined,
+    Number.isNaN(delayMs) ? undefined : delayMs,
   );
 }

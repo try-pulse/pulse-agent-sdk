@@ -130,9 +130,11 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
       const isStop = isStopPrompt(e.data);
       if (isStop) {
         stops.stop(sessionId, { kind: "stop_signal", endReason: e.data.agent_session.end_reason });
+        if (stops.cause(sessionId)?.kind !== "stop_signal") return;
         settleStop?.();
       } else {
         stops.resume(sessionId);
+        if (stops.isStopped(sessionId)) return;
       }
       await options.onSessionPrompted?.(e, { isStop, signal: stops.signal(sessionId, e.installation_id) });
     } else if (event.type === "PermissionChange") {
@@ -151,20 +153,22 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
     const data = event.data as Partial<AgentSessionPromptedEvent["data"]> | undefined;
     const sessionId = event.type === "AgentSessionEvent" && (event.action === "created" || event.action === "prompted")
       ? data?.agent_session?.id : undefined;
-    if (typeof sessionId === "string") {
+    const sessionKey = typeof sessionId === "string" && event.installation_id
+      ? JSON.stringify([event.installation_id, sessionId]) : undefined;
+    if (sessionKey) {
       const now = performance.now();
       for (const [id, expiry] of idleExpiry) {
         if (expiry > now) break;
         idleExpiry.delete(id);
         sessionOrder.delete(id);
       }
-      order = sessionOrder.get(sessionId);
+      order = sessionOrder.get(sessionKey);
       if (!order) {
         if (sessionOrder.size >= limit) return false;
         order = { latestWork: -Infinity, stopAt: -Infinity, pending: 0, pendingStops: new Set() };
-        sessionOrder.set(sessionId, order);
+        sessionOrder.set(sessionKey, order);
       }
-      idleExpiry.delete(sessionId);
+      idleExpiry.delete(sessionKey);
       order.pending++;
       if (event.action === "prompted" && data?.agent_activity?.signal === "stop") {
         let resolve!: () => void;
@@ -179,16 +183,20 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
       .finally(() => settleStop?.())
       .catch((err: unknown) => onError(err, event))
       .finally(() => {
-        if (order && sessionId && --order.pending === 0) {
-          idleExpiry.set(sessionId, performance.now() + ORDER_RETENTION_MS);
+        if (order && sessionKey && --order.pending === 0) {
+          idleExpiry.set(sessionKey, performance.now() + ORDER_RETENTION_MS);
         }
         inflight.delete(run);
       });
     inflight.add(run);
+    void run.catch(() => undefined);
     return true;
   }
 
   function handle(rawBody: Uint8Array | ArrayBuffer | string, headers: HeaderSource): HandleResult {
+    if ((typeof rawBody === "string" ? Buffer.byteLength(rawBody) : rawBody.byteLength) > MAX_BODY_BYTES) {
+      return { status: 413, body: { ok: false, error: "too_large" } };
+    }
     const verified = verifyWebhook(rawBody, headers, options.secret, {
       ...(options.toleranceMs !== undefined && { toleranceMs: options.toleranceMs }),
       ...(options.now && { now: options.now }),
@@ -220,6 +228,11 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
         res.writeHead(result.status, { "content-type": "application/json" });
         res.end(JSON.stringify(result.body));
       };
+      if (req.method !== "POST") {
+        reply({ status: 405, body: { ok: false, error: "method_not_allowed" } });
+        req.resume();
+        return;
+      }
       req.on("data", (chunk: Buffer) => {
         size += chunk.length;
         if (size > MAX_BODY_BYTES && !aborted) {

@@ -67,7 +67,10 @@ export class SessionStops {
 
   stop(sessionId: string, cause: StopCause): void {
     const entry = this.#entry(sessionId);
-    if (entry.controller.signal.aborted) return;
+    if (entry.controller.signal.aborted) {
+      if (isPermanent(cause)) entry.cause = cause;
+      return;
+    }
     entry.cause = cause;
     entry.controller.abort(cause);
   }
@@ -95,7 +98,7 @@ export class SessionStops {
   /** A person wrote in a stopped session: give it a fresh, un-aborted signal. */
   resume(sessionId: string): void {
     const entry = this.#entries.get(sessionId);
-    if (entry?.controller.signal.aborted) {
+    if (entry?.controller.signal.aborted && !isPermanent(entry.cause)) {
       entry.controller = new AbortController();
       delete entry.cause;
     }
@@ -110,6 +113,12 @@ export class SessionStops {
   noteSessionEnded(err: SessionEndedError): void {
     this.stop(err.sessionId, { kind: "session_ended", endReason: err.endReason });
   }
+}
+
+function isPermanent(cause?: StopCause): boolean {
+  if (cause?.kind === "revoked" || cause?.kind === "shutdown") return true;
+  return cause?.kind === "session_ended" &&
+    (cause.endReason === "uninstalled" || cause.endReason === "team_removed" || cause.endReason === "issue_deleted");
 }
 
 /** The `StopCause` behind an aborted signal, if it was stopped through SessionStops. */

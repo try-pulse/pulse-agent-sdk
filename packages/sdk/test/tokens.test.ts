@@ -4,9 +4,9 @@ import { mkdtemp, stat, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InstallFlow, JsonFileTokenStore, MemoryTokenStore, TokenManager, InstallSecretError, type TokenRecord } from "../src/tokens.js";
-import { buildInstallUrl, pkceChallenge } from "../src/oauth.js";
+import { buildInstallUrl, pkceChallenge, refreshTokens, revokeToken } from "../src/oauth.js";
 import { InstallationRevokedError, OAuthError } from "../src/errors.js";
-import { fetchStub, json } from "./_helpers.js";
+import { deferred, fetchStub, json } from "./_helpers.js";
 
 const NOW = 1_790_000_000_000;
 const oauthBase = { clientId: "pulse_app_1", clientSecret: "pulse_sk_x", redirectUri: "https://scout.example/oauth/callback", baseUrl: "https://api.example.test/api/v1" };
@@ -54,6 +54,52 @@ test("invalid_grant on refresh drops the installation's tokens", async () => {
   const tm = new TokenManager({ store, oauth: { ...oauthBase, fetch: stub.fetch }, now: () => NOW });
   await assert.rejects(tm.getAccessToken("inst1"), InstallationRevokedError);
   assert.equal(await store.get("inst1"), undefined);
+});
+
+test("a late 401 reuses the rotated token and forgetting waits for an in-flight refresh", async () => {
+  const store = new MemoryTokenStore();
+  await store.set(record());
+  const entered = deferred();
+  const reply = deferred<Response>();
+  let calls = 0;
+  const manager = new TokenManager({ store, now: () => NOW, oauth: { ...oauthBase, fetch: async () => {
+    calls++;
+    entered.resolve();
+    return reply.promise;
+  } } });
+  const first = manager.getAccessToken("inst1", { forceRefresh: true, rejectedToken: "old-access" });
+  await entered.promise;
+  const second = manager.getAccessToken("inst1", { forceRefresh: true, rejectedToken: "old-access" });
+  reply.resolve(json(200, { access_token: "new-access", token_type: "Bearer", expires_in: 3600, refresh_token: "new-refresh" }));
+  assert.deepEqual(await Promise.all([first, second]), ["new-access", "new-access"]);
+  assert.equal(calls, 1);
+
+  const nextStarted = deferred();
+  const nextReply = deferred<Response>();
+  const revoking = new TokenManager({ store, now: () => NOW, oauth: { ...oauthBase, fetch: async () => {
+    nextStarted.resolve();
+    return nextReply.promise;
+  } } });
+  const refresh = revoking.refresh("inst1");
+  await nextStarted.promise;
+  const forget = revoking.forget("inst1");
+  nextReply.resolve(json(200, { access_token: "a3", token_type: "Bearer", expires_in: 3600, refresh_token: "r3" }));
+  await Promise.all([refresh, forget]);
+  await assert.rejects(revoking.getAccessToken("inst1"), InstallationRevokedError);
+  assert.equal(await store.get("inst1"), undefined);
+});
+
+test("OAuth rejects redirects and malformed successful token responses", async () => {
+  const stub = fetchStub([
+    json(307, null, { location: "https://other.example/token" }),
+    json(200, { access_token: "a", token_type: "Bearer" }),
+    json(307, {}, { location: "https://other.example/revoke" }),
+  ]);
+  const oauth = { ...oauthBase, fetch: stub.fetch };
+  await assert.rejects(refreshTokens(oauth, "refresh"), { name: "OAuthError", error: "http_307" });
+  await assert.rejects(refreshTokens(oauth, "refresh"), { name: "OAuthError", error: "invalid_response" });
+  await assert.rejects(revokeToken(oauth, "access"), { name: "OAuthError", error: "revoke_failed" });
+  assert.deepEqual(stub.calls.map(({ init }) => init.redirect), ["manual", "manual", "manual"]);
 });
 
 test("JsonFileTokenStore round-trips with mode 0600", async () => {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { PulseAgentClient } from "../src/client.js";
 import { SessionStops, SessionEndedError, stopCauseOf } from "../src/stop.js";
 import { InstallationRevokedError, PulseApiError } from "../src/errors.js";
-import { fetchStub, json, session } from "./_helpers.js";
+import { deferred, fetchStub, json, session } from "./_helpers.js";
 
 const activity = (seq: number, extra: Record<string, unknown> = {}) => ({
   id: `act_${seq}`,
@@ -133,13 +133,14 @@ test("a 401 forces one token refresh; INSTALLATION_REVOKED does not", async () =
 });
 
 test("a forced token refresh leaves the activity retry budget available", async () => {
-  const { c, calls } = client([
+  const { c, calls, tokens } = client([
     json(401, { code: "UNAUTHORIZED" }),
     json(429, {}, { "Retry-After": "0" }),
     json(201, { id: "activity" }),
   ], { maxRetries: 1 });
   await c.respond("sess_1", "Done", { idempotencyKey: "stable-key" });
   assert.deepEqual(calls.map((call) => call.headers.get("Idempotency-Key")), ["stable-key", "stable-key", "stable-key"]);
+  assert.deepEqual(tokens, [undefined, true, undefined]);
 });
 
 test("activities() pages with the server's last_seq through seq gaps", async () => {
@@ -151,6 +152,54 @@ test("activities() pages with the server's last_seq through seq gaps", async () 
   assert.deepEqual(all.map((a) => a.seq), [3, 9, 40]);
   assert.equal(calls[0]?.url.searchParams.get("after_seq"), "2");
   assert.equal(calls[1]?.url.searchParams.get("after_seq"), "9");
+});
+
+test("activities rejects a nonadvancing page instead of issuing the same request forever", async () => {
+  const { c, calls } = client([json(200, { data: [activity(5)], has_more: true, last_seq: 5 })]);
+  await assert.rejects(c.sessions.activities("sess_1", { afterSeq: 5 }), /did not advance/);
+  assert.equal(calls.length, 1);
+});
+
+test("redirects and malformed errors preserve HTTP status without forwarding credentials", async () => {
+  const { c, calls } = client([json(307, null, { location: "https://other.example/receive" })]);
+  await assert.rejects(c.request("GET", "/auth/me", {
+    headers: { Authorization: "Bearer wrong", "X-Workspace-ID": "ws-other" },
+  }), (err: unknown) => err instanceof PulseApiError && err.status === 307 && err.code === "HTTP_307");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.init.redirect, "manual");
+  assert.equal(calls[0]?.headers.get("authorization"), "Bearer tok-1");
+  assert.equal(calls[0]?.headers.get("x-workspace-id"), "ws1");
+});
+
+test("long Retry-After is surfaced without sleeping", async () => {
+  const { c } = client([json(429, {}, { "retry-after": "120" })], {
+    sleep: async () => assert.fail("must not sleep for more than one minute"),
+  });
+  await assert.rejects(c.me(), (err: unknown) => err instanceof PulseApiError && err.retryAfterMs === 120_000);
+});
+
+test("abort interrupts token lookup and retry sleep without performing another fetch", async () => {
+  const waiting = deferred<string>();
+  const controller = new AbortController();
+  const waitingClient = client([], { tokenProvider: () => waiting.promise });
+  const lookup = waitingClient.c.sessions.list({ signal: controller.signal });
+  controller.abort(new Error("lookup cancelled"));
+  await assert.rejects(lookup, /lookup cancelled/);
+  waiting.resolve("token");
+  assert.equal(waitingClient.calls.length, 0);
+
+  const sleeping = deferred();
+  const sleepStarted = deferred();
+  const retryController = new AbortController();
+  const retry = client([json(503, {})], {
+    sleep: () => { sleepStarted.resolve(); return sleeping.promise; },
+  });
+  const request = retry.c.sessions.get("sess_1", { signal: retryController.signal });
+  await sleepStarted.promise;
+  retryController.abort(new Error("retry cancelled"));
+  await assert.rejects(request, /retry cancelled/);
+  sleeping.resolve();
+  assert.equal(retry.calls.length, 1);
 });
 
 test("activity shapes: ephemeral action with null parameter, select and auth elicitations", async () => {

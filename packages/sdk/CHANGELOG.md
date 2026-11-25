@@ -1,5 +1,19 @@
 # @try-pulse/agent-sdk
 
+## 0.2.0
+
+### Minor Changes
+
+- 8046b60: Add a durable webhook receiver that verifies signed deliveries and awaits an idempotent inbox write before acknowledgment. Bind verified events to their installation with `PulseAgentClient.forEvent`.
+
+  Deduplicate callback deliveries by installation and occurrence, and handle Stop across reordered deliveries. Callback stores that persist claim keys now receive a JSON-encoded installation/occurrence pair.
+
+  Refuse API and OAuth redirects, bound retry delays, handle cancellation during token lookup and retry waits, and reject stalled activity pagination. Serialize token rotation and revocation within a token manager and reuse the rotated token when concurrent requests receive 401s.
+
+  Sync generated Pulse API types. Check typed fixtures and consumers for changes to issue, project, request and viewer fields, including optional viewer team memberships and required project date granularities.
+
+  Require Node.js `^22.23.4 || ^24.22.1 || >=26.12.1` for Node consumers. Bun remains supported.
+
 ## 0.1.1
 
 ### Patch Changes

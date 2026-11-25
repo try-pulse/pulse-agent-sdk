@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { PulseAgentClient } from "../src/client.js";
 import { createWebhookReceiver, WebhookError } from "../src/receiver.js";
 import { MemoryTokenStore, TokenManager } from "../src/tokens.js";
-import { deferred, fetchStub, json, NOW, SECRET, signed } from "./_helpers.js";
+import { deferred, envelope, fetchStub, json, NOW, SECRET, signed } from "./_helpers.js";
 
 const load = (name: string) => JSON.parse(readFileSync(new URL(`../../../../fixtures/${name}.json`, import.meta.url), "utf8"));
 
@@ -52,6 +52,28 @@ test("data webhook retries use signed fields for the same dedupe key across lang
     err instanceof WebhookError && err.status === 401 && err.code === "bad_signature");
 });
 
+test("Ping bypasses persistence, and permission changes must match the signed installation", async () => {
+  const queued: string[] = [];
+  const receiver = createWebhookReceiver({
+    secret: SECRET, workspaceId: "ws1", now: () => NOW,
+    async enqueue(event) { queued.push(event.payload.type); },
+  });
+  const deliver = (body: unknown) => {
+    const { raw, headers } = signed(body);
+    return receiver.receive(raw, headers);
+  };
+  const ping = { type: "Ping", action: "create", workspace_id: "ws1", webhook_timestamp: NOW, data: {} };
+  assert.equal((await deliver(ping)).dedupeKey, null);
+  await assert.rejects(deliver({ ...ping, workspace_id: "ws2" }), { status: 403, code: "wrong_workspace" });
+  const permission = envelope({ type: "PermissionChange", action: "teamAccessChanged", data: {
+    event_id: "permission", installation_id: "inst1", all_teams: false,
+    team_ids: ["t1"], added_team_ids: [], removed_team_ids: ["t2"],
+  } });
+  await assert.rejects(deliver({ ...permission, installation_id: "other" }), { status: 400, code: "invalid_event" });
+  await deliver(permission);
+  assert.deepEqual(queued, ["PermissionChange"]);
+});
+
 test("binds a queued webhook to the installed principal and the OAuth environment", async () => {
   const receiver = createWebhookReceiver({
     secret: SECRET, workspaceId: "ws1", now: () => NOW, async enqueue() {},
@@ -75,5 +97,8 @@ test("binds a queued webhook to the installed principal and the OAuth environmen
   assert.equal(stub.calls[0]?.url.pathname, "/api/v1/issues/i1");
   assert.equal(stub.calls[0]?.headers.get("x-workspace-id"), "ws1");
   await assert.rejects(PulseAgentClient.forEvent(tokens, { ...payload, app_user_id: "someone-else" }), /does not match/);
+  const record = (await store.get("inst1"))!;
+  await store.set({ ...record, app_user_id: "someone-else" });
+  await assert.rejects(client.getIssue("i1"), /do not match the installation principal/);
   assert.equal(stub.calls.length, 1);
 });

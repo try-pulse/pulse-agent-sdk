@@ -42,7 +42,6 @@ jobs:
           npm --version
       - run: npm ci
       - run: npm run check
-      - run: npm run package:smoke
       - name: Verify release metadata
         run: |
           # `changeset version` must already have run and been committed: an unconsumed changeset
@@ -68,6 +67,17 @@ jobs:
               throw new Error(`Set packages/sdk/package.json repository.url to ${expectedRepository}.git before release`);
             }
           '
+      - name: Pack and test the release archive
+        run: |
+          version="$(node -p 'require("./packages/sdk/package.json").version')"
+          archive="try-pulse-agent-sdk-${version}.tgz"
+          npm pack --workspace @try-pulse/agent-sdk --pack-destination "$RUNNER_TEMP"
+          digest="$GITHUB_WORKSPACE/.github/release-digests/v${version}.sha512"
+          if [ -f "$digest" ]; then
+            (cd "$RUNNER_TEMP" && sha512sum --check "$digest")
+          fi
+          npm run package:smoke -- "$RUNNER_TEMP/$archive"
+          echo "SDK_RELEASE_ARCHIVE=$RUNNER_TEMP/$archive" >> "$GITHUB_ENV"
       # npmjs.com must trust this repository and the exact workflow filename release.yml.
       # Allow direct npm publish in that trusted publisher configuration; no npm token is used.
       # A version already on npm is skipped, so re-running a release (or tagging one that was
@@ -78,7 +88,7 @@ jobs:
           if npm view "@try-pulse/agent-sdk@${version}" version >/dev/null 2>&1; then
             echo "@try-pulse/agent-sdk@${version} is already on npm; not publishing it again."
           else
-            npm publish --workspace @try-pulse/agent-sdk --access public --provenance
+            npm publish "$SDK_RELEASE_ARCHIVE" --access public --provenance
           fi
       - name: Create the GitHub release
         if: github.ref_type == 'tag'

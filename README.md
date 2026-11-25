@@ -9,7 +9,7 @@ Build an agent app that receives delegated issues and @mentions in Pulse, then r
 Pulse sends `AgentSessionEvent` / `created` for a new session and `prompted` for follow-ups and
 Stop requests. The app runs on your infrastructure and is installed into its developer workspace.
 
-The SDK supports Node.js 22+ and Bun, has no runtime dependencies, and derives its wire types
+The SDK supports patched Node.js 22, 24, and 26+ releases and Bun, has no runtime dependencies, and derives its wire types
 from Pulse OpenAPI contracts.
 
 The Python SDK lives in the standalone `pulse-agent-sdk-python` repository and ships as

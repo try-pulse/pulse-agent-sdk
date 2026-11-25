@@ -54,9 +54,9 @@ export class JsonFileTokenStore implements TokenStore {
 
   async #read(): Promise<Record<string, TokenRecord>> {
     try {
-      return JSON.parse(await readFile(this.path, "utf8")) as Record<string, TokenRecord>;
+      return Object.assign(Object.create(null) as Record<string, TokenRecord>, JSON.parse(await readFile(this.path, "utf8")));
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return Object.create(null) as Record<string, TokenRecord>;
       throw err;
     }
   }
@@ -110,7 +110,15 @@ export function tokenRecordFrom(res: OAuthTokenResponse, now = Date.now()): Toke
   };
 }
 
-export type TokenProvider = (opts?: { forceRefresh?: boolean }) => Promise<string>;
+export type TokenRequestOptions = {
+  forceRefresh?: boolean;
+  /** The access token rejected by Pulse. An already-rotated token can satisfy the retry. */
+  rejectedToken?: string;
+};
+
+export type TokenProvider = (opts?: TokenRequestOptions) => Promise<string>;
+
+type InstallationPrincipal = Pick<TokenRecord, "workspace_id" | "app_user_id">;
 
 /**
  * Hands out access tokens per installation and refreshes them within `refreshWindowMs`
@@ -119,6 +127,7 @@ export type TokenProvider = (opts?: { forceRefresh?: boolean }) => Promise<strin
  */
 export class TokenManager {
   readonly #inflight = new Map<string, Promise<TokenRecord>>();
+  readonly #mutations = new Map<string, Promise<void>>();
   constructor(
     private readonly options: {
       store: TokenStore;
@@ -138,28 +147,63 @@ export class TokenManager {
 
   async record(installationId: string): Promise<TokenRecord> {
     const rec = await this.options.store.get(installationId);
-    if (!rec) throw new InstallationRevokedError(installationId, `no tokens stored for installation ${installationId}`);
+    if (!rec || rec.installation_id !== installationId) {
+      throw new InstallationRevokedError(installationId, `no tokens stored for installation ${installationId}`);
+    }
     return rec;
   }
 
-  async getAccessToken(installationId: string, opts: { forceRefresh?: boolean } = {}): Promise<string> {
-    const now = (this.options.now ?? Date.now)();
-    const rec = await this.record(installationId);
+  async getAccessToken(installationId: string, opts: TokenRequestOptions = {}): Promise<string> {
+    return (await this.#accessRecord(installationId, opts)).access_token;
+  }
+
+  async #accessRecord(installationId: string, opts: TokenRequestOptions, principal?: InstallationPrincipal): Promise<TokenRecord> {
+    await this.#mutations.get(installationId);
     const window = this.options.refreshWindowMs ?? 5 * 60 * 1000;
-    if (!opts.forceRefresh && rec.expires_at - now > window) return rec.access_token;
-    return (await this.refresh(installationId)).access_token;
+    const usable = (record: TokenRecord) => {
+      const remaining = record.expires_at - (this.options.now ?? Date.now)();
+      return opts.rejectedToken !== undefined
+        ? record.access_token !== opts.rejectedToken && remaining > 0
+        : !opts.forceRefresh && remaining > window;
+    };
+    const record = await this.#boundRecord(installationId, principal);
+    if (usable(record)) return record;
+    if (!principal && opts.rejectedToken === undefined) return this.refresh(installationId);
+    return this.#mutate(installationId, async () => {
+      const current = await this.#boundRecord(installationId, principal);
+      return usable(current) ? current : this.#refresh(installationId, principal);
+    });
+  }
+
+  async #boundRecord(installationId: string, principal?: InstallationPrincipal): Promise<TokenRecord> {
+    const record = await this.record(installationId);
+    if (principal && (record.workspace_id !== principal.workspace_id || record.app_user_id !== principal.app_user_id)) {
+      throw new InstallationRevokedError(installationId, "stored tokens do not match the installation principal");
+    }
+    return record;
   }
 
   refresh(installationId: string): Promise<TokenRecord> {
     const running = this.#inflight.get(installationId);
     if (running) return running;
-    const run = this.#refresh(installationId).finally(() => this.#inflight.delete(installationId));
+    const run = this.#mutate(installationId, () => this.#refresh(installationId))
+      .finally(() => this.#inflight.delete(installationId));
     this.#inflight.set(installationId, run);
     return run;
   }
 
-  async #refresh(installationId: string): Promise<TokenRecord> {
-    const rec = await this.record(installationId);
+  #mutate<T>(installationId: string, operation: () => Promise<T>): Promise<T> {
+    const run = (this.#mutations.get(installationId) ?? Promise.resolve()).then(operation);
+    const done = run.then(() => undefined, () => undefined);
+    this.#mutations.set(installationId, done);
+    void done.then(() => {
+      if (this.#mutations.get(installationId) === done) this.#mutations.delete(installationId);
+    });
+    return run;
+  }
+
+  async #refresh(installationId: string, principal?: InstallationPrincipal): Promise<TokenRecord> {
+    const rec = await this.#boundRecord(installationId, principal);
     if (!rec.refresh_token) {
       throw new InstallationRevokedError(installationId, "access token expired and no refresh token is stored");
     }
@@ -174,6 +218,12 @@ export class TokenManager {
       throw err;
     }
     const now = (this.options.now ?? Date.now)();
+    if ((res.actor !== undefined && res.actor !== "app") ||
+        (res.installation_id !== undefined && res.installation_id !== installationId) ||
+        (res.workspace_id !== undefined && res.workspace_id !== rec.workspace_id) ||
+        (res.app_user_id !== undefined && res.app_user_id !== rec.app_user_id)) {
+      throw new OAuthError(200, "invalid_response", "refresh response changed installation identity");
+    }
     const next: TokenRecord = {
       ...rec,
       access_token: res.access_token,
@@ -186,18 +236,20 @@ export class TokenManager {
   }
 
   /** Expire the cached access token (keeps the refresh token): the next call refreshes. */
-  async expireAccessToken(installationId: string): Promise<void> {
-    const rec = await this.options.store.get(installationId);
-    if (rec) await this.options.store.set({ ...rec, expires_at: 0 });
+  expireAccessToken(installationId: string): Promise<void> {
+    return this.#mutate(installationId, async () => {
+      const rec = await this.options.store.get(installationId);
+      if (rec) await this.options.store.set({ ...rec, expires_at: 0 });
+    });
   }
 
   /** Drop the installation's tokens (on `OAuthApp` / `revoked`). */
   forget(installationId: string): Promise<void> {
-    return this.options.store.delete(installationId);
+    return this.#mutate(installationId, () => this.options.store.delete(installationId));
   }
 
-  tokenProvider(installationId: string): TokenProvider {
-    return (opts) => this.getAccessToken(installationId, opts);
+  tokenProvider(installationId: string, principal?: InstallationPrincipal): TokenProvider {
+    return async (opts = {}) => (await this.#accessRecord(installationId, opts, principal)).access_token;
   }
 }
 

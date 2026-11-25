@@ -72,7 +72,8 @@ async function tokenRequest(config: OAuthClientConfig, form: Record<string, stri
   const text = await res.text();
   let body: Record<string, unknown> = {};
   try {
-    body = JSON.parse(text) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) body = parsed as typeof body;
   } catch {
     // fall through with an empty body
   }
@@ -83,7 +84,13 @@ async function tokenRequest(config: OAuthClientConfig, form: Record<string, stri
       typeof body["error_description"] === "string" ? body["error_description"] : undefined,
     );
   }
-  if (typeof body["access_token"] !== "string") throw new OAuthError(res.status, "invalid_response", "no access_token");
+  if (typeof body.access_token !== "string" || !body.access_token ||
+      typeof body.token_type !== "string" || body.token_type.toLowerCase() !== "bearer" ||
+      typeof body.expires_in !== "number" || !Number.isSafeInteger(body.expires_in) || body.expires_in <= 0 ||
+      (body.refresh_token !== undefined && (typeof body.refresh_token !== "string" || !body.refresh_token)) ||
+      (body.scope !== undefined && typeof body.scope !== "string")) {
+    throw new OAuthError(res.status, "invalid_response", "invalid token response");
+  }
   return body as OAuthTokenResponse;
 }
 
@@ -105,7 +112,7 @@ export function refreshTokens(config: OAuthClientConfig, refreshToken: string): 
   return tokenRequest(config, { grant_type: "refresh_token", refresh_token: refreshToken });
 }
 
-/** `POST /oauth/revoke`; Pulse always answers 200. */
+/** `POST /oauth/revoke`; Pulse returns 200 for both valid and unknown tokens. */
 export async function revokeToken(config: OAuthClientConfig, token: string): Promise<void> {
   const doFetch = config.fetch ?? fetch;
   const res = await doFetch(`${trimSlash(config.baseUrl ?? DEFAULT_BASE_URL)}/oauth/revoke`, {
