@@ -65,13 +65,14 @@ test("binds a queued webhook to the installed principal and the OAuth environmen
   });
   const oauth = {
     clientId: "client", clientSecret: "secret", redirectUri: "https://example.test/callback",
-    baseUrl: "https://api-stage.trypulse.tech/api/v1",
+    baseUrl: "https://api-stage.trypulse.tech/api/v1///",
   };
   const tokens = new TokenManager({ store, oauth, now: () => NOW });
   const stub = fetchStub([json(200, { id: "issue" })]);
   const client = await PulseAgentClient.forEvent(tokens, payload, { fetch: stub.fetch });
   await client.getIssue("i1");
   assert.equal(stub.calls[0]?.url.origin, "https://api-stage.trypulse.tech");
+  assert.equal(stub.calls[0]?.url.pathname, "/api/v1/issues/i1");
   assert.equal(stub.calls[0]?.headers.get("x-workspace-id"), "ws1");
   await assert.rejects(PulseAgentClient.forEvent(tokens, { ...payload, app_user_id: "someone-else" }), /does not match/);
   assert.equal(stub.calls.length, 1);
