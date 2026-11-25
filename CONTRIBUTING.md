@@ -14,6 +14,9 @@ Include a focused regression test for behavioral changes. SDK tests use Node's b
 runner. Tests should use synthetic data and fake Pulse responses, never live credentials.
 The Scout and Claude examples live in their own sibling repositories and have separate checks.
 
+When the contract or webhook vectors change, refresh the corresponding pinned copies in
+the standalone `pulse-agent-sdk-python` repository and run both SDK test suites.
+
 ## Contract changes
 
 The source of every wire type is Pulse's OpenAPI contract. Change the owning source repository

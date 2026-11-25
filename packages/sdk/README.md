@@ -133,7 +133,8 @@ other API routes. SDK types are generated from the scoped pulse-api and Agent Se
 - `JsonFileTokenStore`, `MemoryDedupeStore`, `InstallFlow` state, and `SessionStops` are
   local to one process. For several replicas, use a shared
   `TokenStore` and `DedupeStore`, coordinate OAuth state and session ownership, and durably
-  queue work after webhook acknowledgement. The SDK's in-process refresh lock does not
+  queue deliveries through `createWebhookReceiver`: its `enqueue` callback commits before
+  acknowledgement. The SDK's in-process refresh lock does not
   coordinate token rotation across replicas.
 
 ## Building in this repository

@@ -28,11 +28,12 @@ const HEX_SHA256 = /^[0-9a-f]{64}$/;
 export function headerValue(headers: HeaderSource, name: string): string | undefined {
   if (typeof (headers as Headers).get === "function") return (headers as Headers).get(name) ?? undefined;
   const lower = name.toLowerCase();
+  const values: string[] = [];
   for (const [key, value] of Object.entries(headers as Record<string, string | string[] | undefined>)) {
-    if (key.toLowerCase() !== lower) continue;
-    return Array.isArray(value) ? value[0] : value;
+    if (key.toLowerCase() !== lower || value === undefined) continue;
+    values.push(...(Array.isArray(value) ? value : [value]));
   }
-  return undefined;
+  return values.length > 0 ? values.join(",") : undefined;
 }
 
 function toBytes(rawBody: Uint8Array | ArrayBuffer | string): Buffer {
@@ -75,12 +76,12 @@ export function verifyWebhook(
 
   let payload: unknown;
   try {
-    payload = JSON.parse(bytes.toString("utf8"));
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
   } catch {
     return { ok: false, reason: "invalid_json" };
   }
   const ts = (payload as { webhook_timestamp?: unknown } | null)?.webhook_timestamp;
-  if (typeof ts !== "number" || !Number.isFinite(ts)) return { ok: false, reason: "missing_timestamp" };
+  if (typeof ts !== "number" || !Number.isSafeInteger(ts)) return { ok: false, reason: "missing_timestamp" };
   if (Math.abs(now() - ts) > toleranceMs) return { ok: false, reason: "stale_timestamp" };
   return { ok: true, payload: payload as AppWebhookEnvelope };
 }

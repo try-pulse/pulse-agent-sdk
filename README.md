@@ -12,6 +12,9 @@ Stop requests. The app runs on your infrastructure and is installed into its dev
 The SDK supports Node.js 22+ and Bun, has no runtime dependencies, and derives its wire types
 from Pulse OpenAPI contracts.
 
+The Python SDK lives in the standalone `pulse-agent-sdk-python` repository and ships as
+`pulse-agent-sdk`. It pins this repository's OpenAPI contracts and webhook fixtures.
+
 ## Start here
 
 From this checkout, install dependencies and verify the SDK:
@@ -41,6 +44,7 @@ and has its own README, setup steps and tests:
 | Path | Purpose |
 | --- | --- |
 | [`packages/sdk`](packages/sdk) | Webhook handler, Agent Session client, OAuth flow, token management |
+| [`fixtures`](fixtures) | Shared signed webhook and retry-key test vectors |
 | [`specs`](specs) | SDK-scoped OpenAPI snapshot, Agent Session spec, manifest schema, source revisions |
 | [`scripts`](scripts) | Contract extraction, type generation, schema checks, packed consumer test |
 

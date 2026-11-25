@@ -4,11 +4,13 @@ import { randomBytes } from "node:crypto";
 import { InstallationRevokedError, OAuthError } from "./errors.js";
 import {
   DEFAULT_APP_SCOPES,
+  DEFAULT_BASE_URL,
   buildInstallUrl,
   exchangeCode,
   generatePkce,
   refreshTokens,
   safeEqual,
+  trimSlash,
   type OAuthClientConfig,
 } from "./oauth.js";
 import type { OAuthTokenResponse } from "./types.js";
@@ -128,6 +130,10 @@ export class TokenManager {
 
   get store(): TokenStore {
     return this.options.store;
+  }
+
+  get apiBaseUrl(): string {
+    return trimSlash(this.options.oauth.baseUrl ?? DEFAULT_BASE_URL);
   }
 
   async record(installationId: string): Promise<TokenRecord> {

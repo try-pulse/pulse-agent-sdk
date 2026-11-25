@@ -4,6 +4,7 @@ export * from "./stop.js";
 export * from "./webhooks.js";
 export * from "./dedupe.js";
 export * from "./handler.js";
+export { createWebhookReceiver, WebhookError, type WebhookIntakeEvent, type WebhookReceiverOptions } from "./receiver.js";
 export * from "./oauth.js";
 export * from "./tokens.js";
 export * from "./client.js";
