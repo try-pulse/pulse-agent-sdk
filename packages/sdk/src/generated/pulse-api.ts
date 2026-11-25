@@ -16,7 +16,7 @@ export interface paths {
         };
         /**
          * Get current user profile
-         * @description Get the current authenticated user's profile information. An identity route: it needs no OAuth scope and answers for any valid token, including an agent app token, where it returns `user.user_kind: application`, `user.agent_kind: app`, `app{id, name}` and `installation_id`. Agent apps use it the way Linear agents use `viewer`.
+         * @description Get the current authenticated user's profile information. An identity route: it needs no OAuth scope and answers for any valid token, including an agent app token, where it returns `user.user_kind: application`, `user.agent_kind: app`, `app{id, name}` and `installation_id`. Agent apps use it the way Linear agents use `viewer`. For an eligible human viewer in the active workspace, the user can include `display_name_style` and the effective avatar URLs for an applied campaign portrait. When a campaign portrait is effective, `base_avatar` contains the workspace-neutral avatar for account identity caches.
          */
         get: operations["getCurrentUser"];
         put?: never;
@@ -317,6 +317,8 @@ export interface components {
             conflict?: components["schemas"]["Conflict"];
         };
         Issue: components["schemas"]["IssueBasic"] & {
+            messaging_source?: components["schemas"]["MessagingSource"];
+            intake_content?: components["schemas"]["MessagingIntakeContent"];
             team_id: components["schemas"]["ObjectId"];
             project_id?: components["schemas"]["ObjectId"] & unknown;
             /** @description ID of the milestone this issue belongs to. Must belong to the same project as the issue. */
@@ -440,7 +442,7 @@ export interface components {
         /** @description RFC 6749 error shape used by the OAuth endpoints. `insufficient_scope` never appears here; it is sent only in `WWW-Authenticate` on a `403 INSUFFICIENT_SCOPE` from an API route. */
         OAuthError: {
             /**
-             * @description `invalid_request`, `invalid_client`, `invalid_grant`, `invalid_scope`, `unauthorized_client`, `unsupported_grant_type`, `access_denied`, or `unsupported_actor` (`actor=app` from a client that is not an agent app).
+             * @description `invalid_request`, `invalid_client`, `invalid_grant`, `invalid_scope`, `invalid_target`, `unauthorized_client`, `unsupported_grant_type`, `access_denied`, or `unsupported_actor` (`actor=app` from a client that is not an agent app).
              * @example unsupported_actor
              */
             error: string;
@@ -498,6 +500,16 @@ export interface components {
             description?: string;
             status?: components["schemas"]["IssueStatus"];
             priority?: components["schemas"]["IssuePriority"];
+            type?: components["schemas"]["IssueType"];
+            /**
+             * @description Move the issue to another team, or send an empty string to make it a personal issue. Moving it into a team requires permission to create issues in that team, and only its owner can change the team of a personal issue.
+             * @example 60f7b3b3b3b3b3b3b3b3b3b3
+             */
+            team_id?: string;
+            /** @description Issues this issue blocks. Replaces the whole set; omit to leave it unchanged. */
+            blocks_ids?: components["schemas"]["ObjectId"][];
+            /** @description Issues blocking this issue. Replaces the whole set; omit to leave it unchanged. */
+            blocked_by_ids?: components["schemas"]["ObjectId"][];
             /**
              * @description Link or unlink a project. Set to `null` (or `""`) to unlink; omit to leave unchanged.
              *     Unlinking or changing the project also clears `milestone_id`.
@@ -537,6 +549,7 @@ export interface components {
              */
             time_estimate?: number & unknown;
             due_date?: components["schemas"]["DateTime"];
+            /** @description At most one label from each label group, unless both were already applied. Any number of ungrouped labels. */
             label_ids?: components["schemas"]["ObjectId"][];
             /**
              * @description Link or unlink a milestone. The milestone must belong to the same project as the issue.
@@ -682,6 +695,9 @@ export interface components {
              *     - `grant_limit_reached`: a cap of the grant is used up; `limit` names it.
              *     - `app_actor`: the write was made by an agent app token. Agent apps cannot set,
              *       change or clear a delegate — not even their own.
+             *     - `personal_key`: the write was made with a personal API key. A delegated agent
+             *       would act with the key owner's whole authority, beyond the key's permissions and
+             *       teams, so a key cannot set, change or clear a delegate.
              *     - `app_not_installed_for_team`: the delegate is an agent app whose active
              *       installation does not cover the issue's team.
              *     - `app_missing_scope`: the delegate is an agent app installed without
@@ -691,7 +707,7 @@ export interface components {
              * @example no_team_access
              * @enum {string}
              */
-            reason: "not_agent" | "not_found" | "not_active" | "no_team_access" | "personal_issue" | "agent_actor" | "outside_grant_scope" | "delegate_not_in_grant" | "self_delegation" | "not_grant_delegation" | "grant_limit_reached" | "app_actor" | "app_not_installed_for_team" | "app_missing_scope" | "app_webhook_disabled";
+            reason: "not_agent" | "not_found" | "not_active" | "no_team_access" | "personal_issue" | "agent_actor" | "outside_grant_scope" | "delegate_not_in_grant" | "self_delegation" | "not_grant_delegation" | "grant_limit_reached" | "app_actor" | "personal_key" | "app_not_installed_for_team" | "app_missing_scope" | "app_webhook_disabled";
             /**
              * @description Set with `grant_limit_reached`.
              * @enum {string}
@@ -716,6 +732,11 @@ export interface components {
          */
         DateTime: string;
         /**
+         * @description Issue type
+         * @enum {string}
+         */
+        IssueType: "bug" | "feature" | "task" | "story";
+        /**
          * @description Issue priority level
          * @enum {string}
          */
@@ -734,8 +755,9 @@ export interface components {
         /**
          * @description One scope's complete document. A person with nothing stored receives the
          *     empty default (`persisted: false`, `rev: 0`, no values), so a client never
-         *     has to merge the response with anything. Keys are opaque to the server: the
-         *     client registry owns what a key means, its schema and its default.
+         *     has to merge the response with anything. The client registry owns the
+         *     meaning, schema and default of ordinary preference keys. The write endpoint
+         *     documents keys that also have server-side rules.
          */
         PreferencesDocument: {
             scope: components["schemas"]["PreferenceScope"];
@@ -792,6 +814,12 @@ export interface components {
          * @description The resolved default home view plus the raw per-tier values. `effective` is
          *     resolved as user override, then workspace default, then the global constant
          *     (`my_issues`).
+         *
+         *     When a saved `dashboard` selection becomes inaccessible (deleted, moved, or the
+         *     caller loses read access), `user` keeps the raw saved selection while `effective`
+         *     and `source` resolve to the workspace default, then the global constant. Restoring
+         *     access makes the saved dashboard effective again. Clients detect "saved but
+         *     unavailable" by comparing `user` with `effective`.
          */
         HomeViewResponse: {
             effective?: components["schemas"]["HomeViewSelection"];
@@ -807,13 +835,17 @@ export interface components {
             type: components["schemas"]["HomeViewType"];
             /** @description Present only when `type` is `favorite`. */
             favorite_id?: string;
+            /** @description Present only when `type` is `dashboard`. The saved dashboard's 24-character hex ObjectID. */
+            dashboard_id?: string;
         };
         /**
-         * @description Fixed home-view code. All values are constant except `favorite`, which pairs
-         *     with a `favorite_id` pointing at one of the caller's favorites.
+         * @description Home-view code. All values are fixed codes except `favorite` (pairs with a
+         *     `favorite_id` pointing at one of the caller's favorites) and `dashboard`
+         *     (pairs with a `dashboard_id` naming a saved dashboard). `favorite` and
+         *     `dashboard` are user-tier only.
          * @enum {string}
          */
-        HomeViewType: "inbox" | "my_issues" | "all_issues" | "active_issues" | "current_cycle" | "projects" | "initiatives" | "favorite";
+        HomeViewType: "inbox" | "my_issues" | "all_issues" | "active_issues" | "current_cycle" | "projects" | "initiatives" | "favorite" | "dashboard";
         UserBasic: {
             id: components["schemas"]["ObjectId"];
             /**
@@ -831,13 +863,17 @@ export interface components {
              * @enum {string}
              */
             status: "active" | "blocked" | "pending";
+            display_name?: string;
+            display_name_style?: components["schemas"]["DisplayNameStyle"];
             /**
              * Format: uri
-             * @description Public URL to user's avatar image
+             * @description Effective avatar URL for this viewer and workspace. An applied campaign portrait is used for eligible viewers.
              * @example https://storage.example.com/avatars/user123/1234567890.jpg
              */
             avatar_url?: string | null;
             avatar_urls?: components["schemas"]["AvatarURLSet"];
+            /** @description Included on GET or PUT /auth/me and POST /auth/me/avatar when an applied campaign portrait overrides the effective avatar. Use this object for workspace-neutral identity caches when present, or the top-level avatar fields when absent. */
+            base_avatar?: components["schemas"]["BaseAvatar"];
             /**
              * @description AI avatar-processing status. Absent/null for users who have never uploaded an avatar. "pending"/"processing" mean an AI-enhanced version is being generated in the background — poll this endpoint until it becomes "processed", at which point avatar_url reflects the final image (or the original, if generation ultimately failed after retries).
              * @example processed
@@ -845,7 +881,7 @@ export interface components {
              */
             avatar_status?: "pending" | "processing" | "processed" | null;
             /**
-             * @description Array of team memberships
+             * @description Array of team memberships; omitted from compact issue-list and project-list user references
              * @example [
              *       {
              *         "team_id": "60f7b3b3b3b3b3b3b3b3b3b4",
@@ -853,7 +889,7 @@ export interface components {
              *       }
              *     ]
              */
-            team_memberships: components["schemas"]["TeamMembership"][];
+            team_memberships?: components["schemas"]["TeamMembership"][];
             /** @description Enriched team data (not persisted, populated on read) */
             teams?: components["schemas"]["TeamBasic"][] | null;
             created_at?: components["schemas"]["DateTime"];
@@ -923,6 +959,12 @@ export interface components {
              */
             role_name?: string;
         };
+        /** @description Workspace-neutral account avatar. An empty object means the account has no base avatar. */
+        BaseAvatar: {
+            /** Format: uri */
+            avatar_url?: string;
+            avatar_urls?: components["schemas"]["AvatarURLSet"];
+        };
         /** @description Resized avatar variants produced on the fly by imgproxy. Each field is a signed URL to a downscaled square version of the same avatar; the client picks the size that fits its rendering context. Omitted entirely when imgproxy is not configured (in that case use avatar_url). */
         AvatarURLSet: {
             /**
@@ -946,6 +988,11 @@ export interface components {
              */
             l?: string;
         };
+        /**
+         * @description A presentation preset selected by the member. Returned only for eligible viewers in the active workspace. The ordinary display name is unchanged.
+         * @enum {string}
+         */
+        DisplayNameStyle: "vice_city";
         /** @description Status timing derived from the issue's lifecycle facts. `status_durations_ms` is cumulative wall-clock time per status across every visit, including re-entry after a backward move or a reopen; the current status's value also includes its running visit through `calculated_at`. `current_status_entered_at` is the start of the current uninterrupted visit only — its age is not the cumulative dwell for that status. Working-time calendars are not applied. Omitted when no lifecycle fact exists yet or the fact has not caught up with the issue's current status. */
         IssueTimeInStatus: {
             current_status: components["schemas"]["IssueStatus"];
@@ -1058,6 +1105,8 @@ export interface components {
         ContentBasic: {
             /** @description Stable identity of this content. For a document that is the ROOT of its version chain, which does not change when the document is edited — store this, it is what `main_doc_id` and a directory membership's `content_id` hold, and what every write endpoint expects. Links, images and videos are not versioned and simply carry their own id. The one exception is the `/content/versions/...` responses, whose `id` addresses one version row. */
             id: components["schemas"]["ObjectId"];
+            /** @description Persisted owning workspace of this content version. Omitted when a legacy record has no stored workspace; never inferred from the caller. */
+            readonly workspace_id?: components["schemas"]["ObjectId"];
             /** @example Project Specification */
             title: string;
             /** @example Main specification document */
@@ -1084,6 +1133,11 @@ export interface components {
             content_type?: string | null;
             /** @example 320000 */
             file_size?: number | null;
+            /**
+             * @description Whether the stored body is a Pulse editor (Plate) document, decided by the server from the bytes at write time whatever client wrote them. `content_type` cannot answer this: the editor saves its documents as `text/plain`, exactly like an uploaded `.txt` file. `true` opens in the document editor; `false` is any other file (download or preview it) and is always the value for links, images and videos; `null` is a legacy document whose body has not been classified yet (superseded version rows, or a body the backfill could not read), where a client should keep its previous behaviour.
+             * @example true
+             */
+            is_editor_document?: boolean | null;
             /** @example abc123def456... */
             checksum?: string | null;
             /**
@@ -1187,22 +1241,19 @@ export interface components {
             priority: components["schemas"]["IssuePriority"];
             type: components["schemas"]["IssueType"];
         };
-        /**
-         * @description Issue type
-         * @enum {string}
-         */
-        IssueType: "bug" | "feature" | "task" | "story";
         Request: components["schemas"]["RequestBasic"] & {
+            /** @description Persisted owning workspace of the request. Omitted when a legacy record has no stored workspace; never inferred from the caller. */
+            readonly workspace_id?: components["schemas"]["ObjectId"];
             /** @description Customer this request came from. Null for internal requests. `contact_id` can only be set when this is set. */
             customer_id?: components["schemas"]["ObjectId"] & unknown;
             /** @description Contact at `customer_id` this request came from, if known. */
             contact_id?: components["schemas"]["ObjectId"] & unknown;
             /**
-             * @description Where the request entered Pulse. Only `manual` (staff-entered) exists today.
+             * @description Canonical entry source, assigned by the server.
              * @example manual
              * @enum {string}
              */
-            source?: "manual";
+            source?: "manual" | "slack" | "mattermost";
             /** @description Optional externally-supplied identifier (e.g. a ticket ID from the customer's own system). Unique per `(workspace_id, source, external_reference)` among non-deleted requests. */
             external_reference?: string | null;
             /** @description Enriched customer (when `customer_id` is set). */
@@ -1289,11 +1340,18 @@ export interface components {
             icon_code: string;
             icon_color: components["schemas"]["HexColor"];
             start_date?: components["schemas"]["DateTime"];
+            start_date_granularity: components["schemas"]["ProjectCalendarGranularity"];
             target_date?: components["schemas"]["DateTime"];
+            target_date_granularity: components["schemas"]["ProjectCalendarGranularity"];
             completed_at?: components["schemas"]["DateTime"];
             /** @example 65 */
             progress?: number;
         };
+        /**
+         * @description UTC calendar timeframe. Explicit granularity normalizes start_date to the period start and target_date to the next period start minus one millisecond. Missing legacy granularity reads as day without rewriting its stored instant.
+         * @enum {string}
+         */
+        ProjectCalendarGranularity: "day" | "month" | "quarter" | "half_year" | "year";
         /**
          * @description Project health status
          * @enum {string}
@@ -1445,6 +1503,25 @@ export interface components {
             description?: string | null;
             /** @example users */
             unit: string;
+            kind?: components["schemas"]["MetricKind"];
+            direction?: components["schemas"]["MetricDirection"];
+            lag_days?: number;
+            /** @description Accountability user IDs; independent of legacy owner_id authorization. */
+            owners?: components["schemas"]["ObjectId"][];
+            /** @description Compact identity/avatar references for active team members from owners, without global memberships or onboarding metadata; omitted with minimal view or failed enrichment. */
+            owner_users?: components["schemas"]["MetricOwnerReference"][];
+            /** @description Deterministic OWNERS block built only from resolved active owner identities. Accountability only; never grants access. */
+            readonly owners_block?: string;
+            readonly certified_by?: string;
+            /** Format: date-time */
+            readonly certified_at?: string;
+            /** Format: int64 */
+            readonly certified_version?: number;
+            /**
+             * Format: int64
+             * @description Absent for legacy metrics. Starts at 1 with structured fields; semantic definition, display metadata or team changes advance it once. Certification alone does not advance it. Semantic changes revoke certification.
+             */
+            readonly definition_version?: number;
             /**
              * Format: float
              * @example 1250.5
@@ -1459,6 +1536,71 @@ export interface components {
             linked_key_results_count?: number;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
+        } & components["schemas"]["MetricDefinitionFields"];
+        MetricOwnerReference: {
+            id: components["schemas"]["ObjectId"];
+            first_name: string;
+            last_name: string;
+            display_name: string;
+            /** Format: uri */
+            avatar_url?: string;
+            avatar_urls?: components["schemas"]["AvatarURLSet"];
+            is_agent?: boolean;
+            /** @enum {string} */
+            user_kind: "human" | "application";
+            agent_icon_code?: string;
+            agent_icon_color?: string;
+            agent_kind?: string;
+        };
+        /** @enum {string} */
+        MetricDirection: "up" | "down" | "neutral";
+        /** @enum {string} */
+        MetricKind: "count" | "sum" | "ratio" | "avg" | "gauge" | "duration";
+        /** @description Optional additive machine contracts. PATCH omission preserves a field; null clears it. Nested objects replace atomically. References must be readable metrics in the same team and cannot introduce a cycle. Unit remains the legacy display label. */
+        MetricDefinitionFields: {
+            numerator_metric_id?: string | null;
+            denominator_metric_id?: string | null;
+            /** @enum {string|null} */
+            unit_family?: "count" | "currency" | "percent" | "ratio" | "duration" | "bytes" | "custom" | null;
+            format?: {
+                percent?: boolean;
+                decimals?: number;
+                currency?: string;
+                scale?: number;
+            } | null;
+            /**
+             * @description Ratio aggregation requires kind ratio and both operand IDs.
+             * @enum {string|null}
+             */
+            time_aggregation?: "sum" | "avg" | "min" | "max" | "last" | "recompute_ratio" | "ratio" | null;
+            /** @enum {string|null} */
+            grain?: "hour" | "day" | "week" | "month" | null;
+            /** @description IANA timezone name. */
+            timezone?: string | null;
+            /** @enum {string|null} */
+            day_basis?: "event" | "cohort" | "scheduled" | "processing" | "settlement" | null;
+            maturity_days?: number | null;
+            /** @description Finite inclusive bounds; min must not exceed max. */
+            bounds?: {
+                min?: number;
+                max?: number;
+            } | null;
+            flatline_days?: number | null;
+            jump_threshold?: number | null;
+            system?: string | null;
+            subarea?: string | null;
+            source_ref?: string | null;
+            ai_context?: {
+                synonyms?: string[];
+                examples?: string[];
+                notes?: string;
+            } | null;
+            parent_metric_id?: string | null;
+            segment_key?: string | null;
+            /** @description Requires parent_metric_id and segment_key. */
+            segment_value?: string | null;
+            segment_keys?: string[] | null;
+            drivers?: string[] | null;
         };
         /**
          * @description Key result status
@@ -1538,6 +1680,7 @@ export interface components {
              * @example Ali Fazeli
              */
             display_name?: string;
+            display_name_style?: components["schemas"]["DisplayNameStyle"];
             /**
              * @description True only for the Pulse Agent's own account. The agent is an ordinary user — that is what makes it mentionable and assignable — so this derived flag is the only way to tell it apart. Clients MUST badge it wherever it appears (comment authors, mention chips, member lists); an agent that reads as a human is exactly what the agent guidelines forbid. Absent for every human, so present-and-true is the whole contract.
              * @example true
@@ -1553,7 +1696,7 @@ export interface components {
             agent_kind?: components["schemas"]["AgentKind"];
             /**
              * Format: uri
-             * @description Public URL to user's avatar image
+             * @description Effective avatar URL for this viewer and workspace. An applied campaign portrait is used for eligible viewers.
              * @example https://storage.example.com/avatars/user123/1234567890.jpg
              */
             avatar_url?: string | null;
@@ -1594,8 +1737,14 @@ export interface components {
             title: string;
             status: string;
             type: string;
-            priority: string;
+            priority: components["schemas"]["RequestPriority"];
         };
+        /**
+         * @description Priority of a request
+         * @example medium
+         * @enum {string}
+         */
+        RequestPriority: "no_priority" | "urgent" | "high" | "medium" | "low";
         Contact: {
             id: components["schemas"]["ObjectId"];
             /** @description Owning workspace ID. */
@@ -1723,8 +1872,18 @@ export interface components {
              * @enum {string}
              */
             status: "triage" | "pending" | "accepted" | "rejected" | "done" | "duplicate";
+            priority: components["schemas"]["RequestPriority"];
             team_id: components["schemas"]["ObjectId"];
-            requester_id: components["schemas"]["ObjectId"];
+            /** @description Present only for a member requester; omitted for external intake. */
+            requester_id?: components["schemas"]["ObjectId"];
+            /**
+             * @description Legacy records without a stored discriminator read as member.
+             * @enum {string}
+             */
+            requester_kind: "member" | "external";
+            external_actor_ref?: components["schemas"]["MessagingExternalActor"];
+            messaging_source?: components["schemas"]["MessagingSource"];
+            intake_content?: components["schemas"]["MessagingIntakeContent"];
             requester_team_id?: components["schemas"]["ObjectId"] & unknown;
             /**
              * @description Optional array of key result IDs this request is linked to (specific measurable outcomes)
@@ -1750,6 +1909,42 @@ export interface components {
              *     ]
              */
             issue_ids?: components["schemas"]["ObjectId"][];
+        };
+        /** @description Resolved template body and free-form answers, stored atomically with the work. Available through the authorized entity response, never a provider confirmation. */
+        MessagingIntakeContent: {
+            /** @enum {string} */
+            format: "plate_json" | "markdown";
+            value: string;
+        };
+        /** @description Source attribution grants no access and does not enable conversation sync. */
+        MessagingSource: {
+            /** @enum {string} */
+            provider: "slack" | "mattermost";
+            installation_id: components["schemas"]["ObjectId"];
+            external_org_key: string;
+            destination_id: string;
+            conversation_id: string;
+            message_id: string;
+            /**
+             * Format: uri
+             * @description Verified provider HTTPS permalink, without credentials, query or fragment.
+             */
+            source_url?: string;
+            display_name?: string;
+            intake_profile_id: components["schemas"]["ObjectId"];
+            /** Format: int64 */
+            intake_profile_revision: number;
+            template_id: components["schemas"]["ObjectId"];
+            template_revision: number;
+        };
+        /** @description Provider identity in its installation and organization namespace; not a Pulse user or customer. */
+        MessagingExternalActor: {
+            /** @enum {string} */
+            provider: "slack" | "mattermost";
+            installation_id: components["schemas"]["ObjectId"];
+            external_org_key: string;
+            external_actor_id: string;
+            display_name?: string;
         };
         Milestone: {
             id: components["schemas"]["ObjectId"];
@@ -1827,7 +2022,7 @@ export interface components {
             estimate_based?: boolean;
             /**
              * Format: float
-             * @description Completion percentage over points. A started issue contributes half a unit and a done issue a full one: (done_points + 0.5 × started_points) / total_points × 100. Zero when total_points is zero — which happens for a team that enabled estimates, turned off counting unestimated issues, and has estimated nothing yet. A milestone in that state still reports status "completed" once all its issues are done: completion is decided by issue counts, not points.
+             * @description Completion percentage over points. A started issue contributes a quarter of a unit and a done issue a full one: (done_points + 0.25 × started_points) / total_points × 100. Zero when total_points is zero — which happens for a team that enabled estimates, turned off counting unestimated issues, and has estimated nothing yet. A milestone in that state still reports status "completed" once all its issues are done: completion is decided by issue counts, not points.
              * @example 50
              */
             progress?: number;
@@ -2046,6 +2241,21 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Too Many Requests - Rate limit exceeded */
+        TooManyRequests: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "code": "RATE_LIMIT_EXCEEDED",
+                 *       "message": "Rate limit exceeded. Please try again later."
+                 *     }
+                 */
+                "application/json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: {
         /** @description Resource ID */
@@ -2088,6 +2298,8 @@ export interface operations {
                 /** @description Scopes separated by spaces or commas (see `OAuthScope`). Agent apps usually request `read,write,app:assignable,app:mentionable`. */
                 scope?: string;
                 state?: string;
+                /** @description Single HTTPS resource audience configured for this client by the operator. Omission selects that configured audience. For configured clients, a different or repeated value returns `invalid_target`. Clients without a configured resource retain API-only tokens; requesting a resource does not add an audience. Unsupported for `actor=app`. */
+                resource?: string;
                 code_challenge: string;
                 code_challenge_method: "S256";
                 /** @description `user` (default): the token acts for the person who consents. `app`: install an agent app; the token acts as the app itself. */
@@ -2099,7 +2311,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Redirect to login, consent UI, or `redirect_uri` with `code` or `error` (`invalid_request`, `invalid_scope`, `unsupported_actor`, `access_denied`). */
+            /** @description Redirect to login, consent UI, or `redirect_uri` with `code` or `error` (`invalid_request`, `invalid_scope`, `invalid_target`, `unsupported_actor`, `access_denied`). */
             302: {
                 headers: {
                     [name: string]: unknown;
@@ -2140,6 +2352,11 @@ export interface operations {
                     code_verifier?: string;
                     /** @description Existing refresh token (refresh_token grant) */
                     refresh_token?: string;
+                    /**
+                     * Format: uri
+                     * @description Optional single resource audience. Must match the resource bound to the authorization code or refresh token and the current client configuration; omission preserves that binding. Mismatches return `invalid_target`. Unconfigured clients retain API-only tokens.
+                     */
+                    resource?: string;
                 };
             };
         };
@@ -2193,7 +2410,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description OAuth error envelope (`invalid_grant`, `invalid_client`, `invalid_request`, …) */
+            /** @description OAuth error envelope (`invalid_grant`, `invalid_client`, `invalid_request`, `invalid_target`, …) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2202,6 +2419,7 @@ export interface operations {
                     "application/json": components["schemas"]["OAuthError"];
                 };
             };
+            429: components["responses"]["TooManyRequests"];
         };
     };
     oauthRevoke: {
@@ -2228,6 +2446,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            429: components["responses"]["TooManyRequests"];
         };
     };
     getIssueById: {
@@ -2296,7 +2515,8 @@ export interface operations {
             /**
              * @description `label_ids` cannot be applied (`VALIDATION`): more than 10 labels, a repeated
              *     label, a label from another team, a label for a different entity type, or an
-             *     archived label.
+             *     archived label. `LABEL_GROUP_CONFLICT`: two labels from one label group, at
+             *     least one of them newly applied.
              */
             422: {
                 headers: {

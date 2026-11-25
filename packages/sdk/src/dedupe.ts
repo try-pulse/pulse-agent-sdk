@@ -1,4 +1,4 @@
-/** Remembers which `data.event_id`s were handled. Delivery is at least once. */
+/** Claims an opaque, installation-scoped occurrence key. Delivery is at least once. */
 export interface DedupeStore {
   /** Returns true the first time an id is seen, false for a repeat. */
   claim(eventId: string): Promise<boolean> | boolean;

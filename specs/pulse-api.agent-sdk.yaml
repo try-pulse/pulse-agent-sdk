@@ -17,7 +17,9 @@ paths:
         Get the current authenticated user's profile information. An identity route: it needs no OAuth scope and answers
         for any valid token, including an agent app token, where it returns `user.user_kind: application`,
         `user.agent_kind: app`, `app{id, name}` and `installation_id`. Agent apps use it the way Linear agents use
-        `viewer`.
+        `viewer`. For an eligible human viewer in the active workspace, the user can include `display_name_style` and
+        the effective avatar URLs for an applied campaign portrait. When a campaign portrait is effective, `base_avatar`
+        contains the workspace-neutral avatar for account identity caches.
       operationId: getCurrentUser
       responses:
         '200':
@@ -95,6 +97,16 @@ paths:
           in: query
           schema:
             type: string
+        - name: resource
+          in: query
+          description: >-
+            Single HTTPS resource audience configured for this client by the operator. Omission selects that configured
+            audience. For configured clients, a different or repeated value returns `invalid_target`. Clients without a
+            configured resource retain API-only tokens; requesting a resource does not add an audience. Unsupported for
+            `actor=app`.
+          schema:
+            type: string
+            format: uri
         - name: code_challenge
           in: query
           required: true
@@ -123,7 +135,7 @@ paths:
         '302':
           description: >-
             Redirect to login, consent UI, or `redirect_uri` with `code` or `error` (`invalid_request`, `invalid_scope`,
-            `unsupported_actor`, `access_denied`).
+            `invalid_target`, `unsupported_actor`, `access_denied`).
         '400':
           description: >-
             OAuth error before a redirect is possible (`invalid_client`, `invalid_request` for an unregistered
@@ -185,6 +197,13 @@ paths:
                 refresh_token:
                   type: string
                   description: Existing refresh token (refresh_token grant)
+                resource:
+                  type: string
+                  format: uri
+                  description: >-
+                    Optional single resource audience. Must match the resource bound to the authorization code or
+                    refresh token and the current client configuration; omission preserves that binding. Mismatches
+                    return `invalid_target`. Unconfigured clients retain API-only tokens.
       responses:
         '200':
           description: Token response (OAuth2-style)
@@ -239,11 +258,13 @@ paths:
                 app_user_id: 6ab5a2d134765b14d76a6b12
                 workspace_id: 6a34cfb024a3b4ed28806e3b
         '400':
-          description: OAuth error envelope (`invalid_grant`, `invalid_client`, `invalid_request`, …)
+          description: OAuth error envelope (`invalid_grant`, `invalid_client`, `invalid_request`, `invalid_target`, …)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /oauth/revoke:
     post:
       tags:
@@ -268,6 +289,8 @@ paths:
       responses:
         '200':
           description: Revoked (or silently ignored invalid token).
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /issues/{id}:
     get:
       tags:
@@ -344,7 +367,8 @@ paths:
           description: |
             `label_ids` cannot be applied (`VALIDATION`): more than 10 labels, a repeated
             label, a label from another team, a label for a different entity type, or an
-            archived label.
+            archived label. `LABEL_GROUP_CONFLICT`: two labels from one label group, at
+            least one of them newly applied.
           content:
             application/json:
               schema:
@@ -629,6 +653,10 @@ components:
             - created_at
             - updated_at
           properties:
+            messaging_source:
+              $ref: '#/components/schemas/MessagingSource'
+            intake_content:
+              $ref: '#/components/schemas/MessagingIntakeContent'
             team_id:
               $ref: '#/components/schemas/ObjectId'
             project_id:
@@ -968,9 +996,9 @@ components:
         error:
           type: string
           description: >-
-            `invalid_request`, `invalid_client`, `invalid_grant`, `invalid_scope`, `unauthorized_client`,
-            `unsupported_grant_type`, `access_denied`, or `unsupported_actor` (`actor=app` from a client that is not an
-            agent app).
+            `invalid_request`, `invalid_client`, `invalid_grant`, `invalid_scope`, `invalid_target`,
+            `unauthorized_client`, `unsupported_grant_type`, `access_denied`, or `unsupported_actor` (`actor=app` from a
+            client that is not an agent app).
           example: unsupported_actor
         error_description:
           type: string
@@ -1089,6 +1117,26 @@ components:
           $ref: '#/components/schemas/IssueStatus'
         priority:
           $ref: '#/components/schemas/IssuePriority'
+        type:
+          $ref: '#/components/schemas/IssueType'
+        team_id:
+          type: string
+          pattern: ^([0-9a-fA-F]{24})?$
+          description: >-
+            Move the issue to another team, or send an empty string to make it a personal issue. Moving it into a team
+            requires permission to create issues in that team, and only its owner can change the team of a personal
+            issue.
+          example: 60f7b3b3b3b3b3b3b3b3b3b3
+        blocks_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectId'
+          description: Issues this issue blocks. Replaces the whole set; omit to leave it unchanged.
+        blocked_by_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectId'
+          description: Issues blocking this issue. Replaces the whole set; omit to leave it unchanged.
         project_id:
           allOf:
             - $ref: '#/components/schemas/ObjectId'
@@ -1140,6 +1188,7 @@ components:
         due_date:
           $ref: '#/components/schemas/DateTime'
         label_ids:
+          description: At most one label from each label group, unless both were already applied. Any number of ungrouped labels.
           type: array
           maxItems: 10
           items:
@@ -1471,6 +1520,7 @@ components:
             - not_grant_delegation
             - grant_limit_reached
             - app_actor
+            - personal_key
             - app_not_installed_for_team
             - app_missing_scope
             - app_webhook_disabled
@@ -1492,6 +1542,9 @@ components:
             - `grant_limit_reached`: a cap of the grant is used up; `limit` names it.
             - `app_actor`: the write was made by an agent app token. Agent apps cannot set,
               change or clear a delegate — not even their own.
+            - `personal_key`: the write was made with a personal API key. A delegated agent
+              would act with the key owner's whole authority, beyond the key's permissions and
+              teams, so a key cannot set, change or clear a delegate.
             - `app_not_installed_for_team`: the delegate is an agent app whose active
               installation does not cover the issue's team.
             - `app_missing_scope`: the delegate is an agent app installed without
@@ -1521,6 +1574,14 @@ components:
       format: date-time
       description: ISO 8601 date-time
       example: '2024-01-15T10:30:00Z'
+    IssueType:
+      type: string
+      enum:
+        - bug
+        - feature
+        - task
+        - story
+      description: Issue type
     IssuePriority:
       type: string
       enum:
@@ -1560,8 +1621,9 @@ components:
       description: |
         One scope's complete document. A person with nothing stored receives the
         empty default (`persisted: false`, `rev: 0`, no values), so a client never
-        has to merge the response with anything. Keys are opaque to the server: the
-        client registry owns what a key means, its schema and its default.
+        has to merge the response with anything. The client registry owns the
+        meaning, schema and default of ordinary preference keys. The write endpoint
+        documents keys that also have server-side rules.
       properties:
         scope:
           $ref: '#/components/schemas/PreferenceScope'
@@ -1637,6 +1699,12 @@ components:
         The resolved default home view plus the raw per-tier values. `effective` is
         resolved as user override, then workspace default, then the global constant
         (`my_issues`).
+
+        When a saved `dashboard` selection becomes inaccessible (deleted, moved, or the
+        caller loses read access), `user` keeps the raw saved selection while `effective`
+        and `source` resolve to the workspace default, then the global constant. Restoring
+        access makes the saved dashboard effective again. Clients detect "saved but
+        unavailable" by comparing `user` with `effective`.
       properties:
         effective:
           $ref: '#/components/schemas/HomeViewSelection'
@@ -1666,13 +1734,19 @@ components:
         favorite_id:
           type: string
           description: Present only when `type` is `favorite`.
+        dashboard_id:
+          type: string
+          pattern: ^[0-9a-fA-F]{24}$
+          description: Present only when `type` is `dashboard`. The saved dashboard's 24-character hex ObjectID.
       required:
         - type
     HomeViewType:
       type: string
       description: |
-        Fixed home-view code. All values are constant except `favorite`, which pairs
-        with a `favorite_id` pointing at one of the caller's favorites.
+        Home-view code. All values are fixed codes except `favorite` (pairs with a
+        `favorite_id` pointing at one of the caller's favorites) and `dashboard`
+        (pairs with a `dashboard_id` naming a saved dashboard). `favorite` and
+        `dashboard` are user-tier only.
       enum:
         - inbox
         - my_issues
@@ -1682,6 +1756,7 @@ components:
         - projects
         - initiatives
         - favorite
+        - dashboard
     UserBasic:
       type: object
       required:
@@ -1689,7 +1764,6 @@ components:
         - email
         - role
         - status
-        - team_memberships
       properties:
         id:
           $ref: '#/components/schemas/ObjectId'
@@ -1710,14 +1784,27 @@ components:
             - blocked
             - pending
           example: active
+        display_name:
+          type: string
+        display_name_style:
+          $ref: '#/components/schemas/DisplayNameStyle'
         avatar_url:
           type: string
           format: uri
           nullable: true
-          description: Public URL to user's avatar image
+          description: >-
+            Effective avatar URL for this viewer and workspace. An applied campaign portrait is used for eligible
+            viewers.
           example: https://storage.example.com/avatars/user123/1234567890.jpg
         avatar_urls:
           $ref: '#/components/schemas/AvatarURLSet'
+        base_avatar:
+          allOf:
+            - $ref: '#/components/schemas/BaseAvatar'
+          description: >-
+            Included on GET or PUT /auth/me and POST /auth/me/avatar when an applied campaign portrait overrides the
+            effective avatar. Use this object for workspace-neutral identity caches when present, or the top-level
+            avatar fields when absent.
         avatar_status:
           type: string
           enum:
@@ -1733,7 +1820,7 @@ components:
           example: processed
         team_memberships:
           type: array
-          description: Array of team memberships
+          description: Array of team memberships; omitted from compact issue-list and project-list user references
           items:
             $ref: '#/components/schemas/TeamMembership'
           example:
@@ -1850,6 +1937,15 @@ components:
           type: string
           description: Name of the assigned team role. Empty when the role could not be resolved.
           example: Team Member
+    BaseAvatar:
+      type: object
+      description: Workspace-neutral account avatar. An empty object means the account has no base avatar.
+      properties:
+        avatar_url:
+          type: string
+          format: uri
+        avatar_urls:
+          $ref: '#/components/schemas/AvatarURLSet'
     AvatarURLSet:
       type: object
       description: >-
@@ -1873,6 +1969,13 @@ components:
           type: string
           format: uri
           description: 256×256 variant
+    DisplayNameStyle:
+      type: string
+      enum:
+        - vice_city
+      description: >-
+        A presentation preset selected by the member. Returned only for eligible viewers in the active workspace. The
+        ordinary display name is unchanged.
     IssueTimeInStatus:
       type: object
       description: >
@@ -2048,6 +2151,13 @@ components:
             hold, and what every write endpoint expects. Links, images and videos are not versioned and simply carry
             their own id. The one exception is the `/content/versions/...` responses, whose `id` addresses one version
             row.
+        workspace_id:
+          allOf:
+            - $ref: '#/components/schemas/ObjectId'
+          readOnly: true
+          description: >-
+            Persisted owning workspace of this content version. Omitted when a legacy record has no stored workspace;
+            never inferred from the caller.
         title:
           type: string
           minLength: 2
@@ -2091,6 +2201,17 @@ components:
           minimum: 0
           nullable: true
           example: 320000
+        is_editor_document:
+          type: boolean
+          nullable: true
+          description: >-
+            Whether the stored body is a Pulse editor (Plate) document, decided by the server from the bytes at write
+            time whatever client wrote them. `content_type` cannot answer this: the editor saves its documents as
+            `text/plain`, exactly like an uploaded `.txt` file. `true` opens in the document editor; `false` is any
+            other file (download or preview it) and is always the value for links, images and videos; `null` is a legacy
+            document whose body has not been classified yet (superseded version rows, or a body the backfill could not
+            read), where a client should keep its previous behaviour.
+          example: true
         checksum:
           type: string
           nullable: true
@@ -2349,19 +2470,18 @@ components:
           $ref: '#/components/schemas/IssuePriority'
         type:
           $ref: '#/components/schemas/IssueType'
-    IssueType:
-      type: string
-      enum:
-        - bug
-        - feature
-        - task
-        - story
-      description: Issue type
     Request:
       allOf:
         - $ref: '#/components/schemas/RequestBasic'
         - type: object
           properties:
+            workspace_id:
+              allOf:
+                - $ref: '#/components/schemas/ObjectId'
+              readOnly: true
+              description: >-
+                Persisted owning workspace of the request. Omitted when a legacy record has no stored workspace; never
+                inferred from the caller.
             customer_id:
               allOf:
                 - $ref: '#/components/schemas/ObjectId'
@@ -2378,7 +2498,9 @@ components:
               type: string
               enum:
                 - manual
-              description: Where the request entered Pulse. Only `manual` (staff-entered) exists today.
+                - slack
+                - mattermost
+              description: Canonical entry source, assigned by the server.
               example: manual
             external_reference:
               type: string
@@ -2603,6 +2725,8 @@ components:
         - priority
         - icon_code
         - icon_color
+        - start_date_granularity
+        - target_date_granularity
       properties:
         id:
           $ref: '#/components/schemas/ObjectId'
@@ -2634,8 +2758,12 @@ components:
           $ref: '#/components/schemas/HexColor'
         start_date:
           $ref: '#/components/schemas/DateTime'
+        start_date_granularity:
+          $ref: '#/components/schemas/ProjectCalendarGranularity'
         target_date:
           $ref: '#/components/schemas/DateTime'
+        target_date_granularity:
+          $ref: '#/components/schemas/ProjectCalendarGranularity'
         completed_at:
           $ref: '#/components/schemas/DateTime'
         progress:
@@ -2643,6 +2771,18 @@ components:
           minimum: 0
           maximum: 100
           example: 65
+    ProjectCalendarGranularity:
+      type: string
+      enum:
+        - day
+        - month
+        - quarter
+        - half_year
+        - year
+      description: >-
+        UTC calendar timeframe. Explicit granularity normalizes start_date to the period start and target_date to the
+        next period start minus one millisecond. Missing legacy granularity reads as day without rewriting its stored
+        instant.
     ProjectHealthStatus:
       type: string
       enum:
@@ -2939,6 +3079,8 @@ components:
         How the measurement was created. `daily_snapshot` is written by the daily key-result snapshot job and by the
         backfill in migration 015, so it appears on stored rows a client will read back.
     Metric:
+      allOf:
+        - $ref: '#/components/schemas/MetricDefinitionFields'
       type: object
       required:
         - id
@@ -2965,6 +3107,53 @@ components:
           type: string
           maxLength: 50
           example: users
+        kind:
+          $ref: '#/components/schemas/MetricKind'
+        direction:
+          $ref: '#/components/schemas/MetricDirection'
+        lag_days:
+          type: integer
+          minimum: 0
+          maximum: 3650
+        owners:
+          type: array
+          maxItems: 25
+          uniqueItems: true
+          description: Accountability user IDs; independent of legacy owner_id authorization.
+          items:
+            $ref: '#/components/schemas/ObjectId'
+        owner_users:
+          type: array
+          description: >-
+            Compact identity/avatar references for active team members from owners, without global memberships or
+            onboarding metadata; omitted with minimal view or failed enrichment.
+          items:
+            $ref: '#/components/schemas/MetricOwnerReference'
+        owners_block:
+          type: string
+          readOnly: true
+          description: >-
+            Deterministic OWNERS block built only from resolved active owner identities. Accountability only; never
+            grants access.
+        certified_by:
+          type: string
+          readOnly: true
+        certified_at:
+          type: string
+          format: date-time
+          readOnly: true
+        certified_version:
+          type: integer
+          format: int64
+          readOnly: true
+        definition_version:
+          type: integer
+          format: int64
+          minimum: 1
+          readOnly: true
+          description: >-
+            Absent for legacy metrics. Starts at 1 with structured fields; semantic definition, display metadata or team
+            changes advance it once. Certification alone does not advance it. Semantic changes revoke certification.
         current_value:
           type: number
           format: float
@@ -2995,6 +3184,224 @@ components:
           $ref: '#/components/schemas/DateTime'
         updated_at:
           $ref: '#/components/schemas/DateTime'
+    MetricOwnerReference:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - first_name
+        - last_name
+        - display_name
+        - user_kind
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        first_name:
+          type: string
+        last_name:
+          type: string
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          format: uri
+        avatar_urls:
+          $ref: '#/components/schemas/AvatarURLSet'
+        is_agent:
+          type: boolean
+        user_kind:
+          type: string
+          enum:
+            - human
+            - application
+        agent_icon_code:
+          type: string
+        agent_icon_color:
+          type: string
+        agent_kind:
+          type: string
+    MetricDirection:
+      type: string
+      enum:
+        - up
+        - down
+        - neutral
+    MetricKind:
+      type: string
+      enum:
+        - count
+        - sum
+        - ratio
+        - avg
+        - gauge
+        - duration
+    MetricDefinitionFields:
+      type: object
+      description: >-
+        Optional additive machine contracts. PATCH omission preserves a field; null clears it. Nested objects replace
+        atomically. References must be readable metrics in the same team and cannot introduce a cycle. Unit remains the
+        legacy display label.
+      properties:
+        numerator_metric_id:
+          type: string
+          pattern: ^[a-f0-9]{24}$
+          nullable: true
+        denominator_metric_id:
+          type: string
+          pattern: ^[a-f0-9]{24}$
+          nullable: true
+        unit_family:
+          type: string
+          enum:
+            - count
+            - currency
+            - percent
+            - ratio
+            - duration
+            - bytes
+            - custom
+          nullable: true
+        format:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            percent:
+              type: boolean
+            decimals:
+              type: integer
+              minimum: 0
+              maximum: 12
+            currency:
+              type: string
+              pattern: ^[A-Z]{3}$
+            scale:
+              type: number
+              minimum: 0
+              exclusiveMinimum: true
+        time_aggregation:
+          type: string
+          enum:
+            - sum
+            - avg
+            - min
+            - max
+            - last
+            - recompute_ratio
+            - ratio
+          nullable: true
+          description: Ratio aggregation requires kind ratio and both operand IDs.
+        grain:
+          type: string
+          enum:
+            - hour
+            - day
+            - week
+            - month
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+          description: IANA timezone name.
+        day_basis:
+          type: string
+          enum:
+            - event
+            - cohort
+            - scheduled
+            - processing
+            - settlement
+          nullable: true
+        maturity_days:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 3650
+        bounds:
+          type: object
+          nullable: true
+          additionalProperties: false
+          description: Finite inclusive bounds; min must not exceed max.
+          properties:
+            min:
+              type: number
+            max:
+              type: number
+        flatline_days:
+          type: integer
+          nullable: true
+          minimum: 2
+          maximum: 42
+        jump_threshold:
+          type: number
+          nullable: true
+          minimum: 1
+          exclusiveMinimum: true
+          maximum: 1000
+        system:
+          type: string
+          maxLength: 200
+          nullable: true
+        subarea:
+          type: string
+          maxLength: 200
+          nullable: true
+        source_ref:
+          type: string
+          maxLength: 2000
+          nullable: true
+        ai_context:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            synonyms:
+              type: array
+              maxItems: 50
+              items:
+                type: string
+                minLength: 1
+                maxLength: 1000
+            examples:
+              type: array
+              maxItems: 20
+              items:
+                type: string
+                minLength: 1
+                maxLength: 1000
+            notes:
+              type: string
+              maxLength: 4000
+        parent_metric_id:
+          type: string
+          pattern: ^[a-f0-9]{24}$
+          nullable: true
+        segment_key:
+          type: string
+          maxLength: 200
+          nullable: true
+        segment_value:
+          type: string
+          maxLength: 200
+          nullable: true
+          description: Requires parent_metric_id and segment_key.
+        segment_keys:
+          type: array
+          nullable: true
+          uniqueItems: true
+          maxItems: 50
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+        drivers:
+          type: array
+          nullable: true
+          uniqueItems: true
+          maxItems: 50
+          items:
+            type: string
+            pattern: ^[a-f0-9]{24}$
     KeyResultStatus:
       type: string
       enum:
@@ -3111,6 +3518,8 @@ components:
           type: string
           example: Ali Fazeli
           description: concatenated first name and last name, fallback to email
+        display_name_style:
+          $ref: '#/components/schemas/DisplayNameStyle'
         is_agent:
           type: boolean
           description: >-
@@ -3140,7 +3549,9 @@ components:
           type: string
           format: uri
           nullable: true
-          description: Public URL to user's avatar image
+          description: >-
+            Effective avatar URL for this viewer and workspace. An applied campaign portrait is used for eligible
+            viewers.
           example: https://storage.example.com/avatars/user123/1234567890.jpg
         avatar_urls:
           $ref: '#/components/schemas/AvatarURLSet'
@@ -3205,7 +3616,17 @@ components:
         type:
           type: string
         priority:
-          type: string
+          $ref: '#/components/schemas/RequestPriority'
+    RequestPriority:
+      type: string
+      enum:
+        - no_priority
+        - urgent
+        - high
+        - medium
+        - low
+      description: Priority of a request
+      example: medium
     Contact:
       type: object
       required:
@@ -3473,8 +3894,9 @@ components:
         - title
         - type
         - status
+        - priority
         - team_id
-        - requester_id
+        - requester_kind
       properties:
         id:
           $ref: '#/components/schemas/ObjectId'
@@ -3508,10 +3930,25 @@ components:
             - done
             - duplicate
           example: triage
+        priority:
+          $ref: '#/components/schemas/RequestPriority'
         team_id:
           $ref: '#/components/schemas/ObjectId'
         requester_id:
           $ref: '#/components/schemas/ObjectId'
+          description: Present only for a member requester; omitted for external intake.
+        requester_kind:
+          type: string
+          enum:
+            - member
+            - external
+          description: Legacy records without a stored discriminator read as member.
+        external_actor_ref:
+          $ref: '#/components/schemas/MessagingExternalActor'
+        messaging_source:
+          $ref: '#/components/schemas/MessagingSource'
+        intake_content:
+          $ref: '#/components/schemas/MessagingIntakeContent'
         requester_team_id:
           allOf:
             - $ref: '#/components/schemas/ObjectId'
@@ -3540,6 +3977,89 @@ components:
           example:
             - 507f1f77bcf86cd799439015
             - 507f1f77bcf86cd799439016
+    MessagingIntakeContent:
+      type: object
+      required:
+        - format
+        - value
+      properties:
+        format:
+          type: string
+          enum:
+            - plate_json
+            - markdown
+        value:
+          type: string
+      description: >-
+        Resolved template body and free-form answers, stored atomically with the work. Available through the authorized
+        entity response, never a provider confirmation.
+    MessagingSource:
+      type: object
+      required:
+        - provider
+        - installation_id
+        - external_org_key
+        - destination_id
+        - conversation_id
+        - message_id
+        - intake_profile_id
+        - intake_profile_revision
+        - template_id
+        - template_revision
+      properties:
+        provider:
+          type: string
+          enum:
+            - slack
+            - mattermost
+        installation_id:
+          $ref: '#/components/schemas/ObjectId'
+        external_org_key:
+          type: string
+        destination_id:
+          type: string
+        conversation_id:
+          type: string
+        message_id:
+          type: string
+        source_url:
+          type: string
+          format: uri
+          description: Verified provider HTTPS permalink, without credentials, query or fragment.
+        display_name:
+          type: string
+        intake_profile_id:
+          $ref: '#/components/schemas/ObjectId'
+        intake_profile_revision:
+          type: integer
+          format: int64
+        template_id:
+          $ref: '#/components/schemas/ObjectId'
+        template_revision:
+          type: integer
+      description: Source attribution grants no access and does not enable conversation sync.
+    MessagingExternalActor:
+      type: object
+      required:
+        - provider
+        - installation_id
+        - external_org_key
+        - external_actor_id
+      properties:
+        provider:
+          type: string
+          enum:
+            - slack
+            - mattermost
+        installation_id:
+          $ref: '#/components/schemas/ObjectId'
+        external_org_key:
+          type: string
+        external_actor_id:
+          type: string
+        display_name:
+          type: string
+      description: Provider identity in its installation and organization namespace; not a Pulse user or customer.
     Milestone:
       type: object
       required:
@@ -3659,11 +4179,11 @@ components:
           maximum: 100
           example: 50
           description: >-
-            Completion percentage over points. A started issue contributes half a unit and a done issue a full one:
-            (done_points + 0.5 × started_points) / total_points × 100. Zero when total_points is zero — which happens
-            for a team that enabled estimates, turned off counting unestimated issues, and has estimated nothing yet. A
-            milestone in that state still reports status "completed" once all its issues are done: completion is decided
-            by issue counts, not points.
+            Completion percentage over points. A started issue contributes a quarter of a unit and a done issue a full
+            one: (done_points + 0.25 × started_points) / total_points × 100. Zero when total_points is zero — which
+            happens for a team that enabled estimates, turned off counting unestimated issues, and has estimated nothing
+            yet. A milestone in that state still reports status "completed" once all its issues are done: completion is
+            decided by issue counts, not points.
     IssueDevelopmentSummary:
       type: object
       description: >-
@@ -4040,6 +4560,15 @@ components:
           example:
             code: INVALID_REQUEST
             message: Invalid request format
+    TooManyRequests:
+      description: Too Many Requests - Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: RATE_LIMIT_EXCEEDED
+            message: Rate limit exceeded. Please try again later.
   parameters:
     Id:
       name: id

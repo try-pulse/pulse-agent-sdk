@@ -281,7 +281,7 @@ export class PulseAgentClient {
     let forceRefresh = false;
     let refreshedOnce = false;
 
-    for (let attempt = 0; ; attempt++) {
+    for (let attempt = 0; ;) {
       opts.signal?.throwIfAborted();
       const token = await this.#o.tokenProvider(forceRefresh ? { forceRefresh: true } : undefined);
       forceRefresh = false;
@@ -297,13 +297,14 @@ export class PulseAgentClient {
       try {
         res = await doFetch(url, {
           method,
+          redirect: "manual",
           headers,
           ...(opts.body !== undefined && { body: JSON.stringify(opts.body) }),
           ...(opts.signal && { signal: opts.signal }),
         });
       } catch (err) {
         if (opts.signal?.aborted || !retryable || attempt >= maxRetries) throw err;
-        await sleep(this.#backoff(attempt));
+        await sleep(this.#backoff(attempt++));
         continue;
       }
 
@@ -331,8 +332,9 @@ export class PulseAgentClient {
       const again =
         attempt < maxRetries &&
         (res.status === 429 || (retryable && (res.status === 408 || (res.status >= 500 && res.status !== 501))));
-      if (!again) throw err;
+      if (!again || (err.retryAfterMs ?? 0) > 60_000) throw err;
       await sleep(err.retryAfterMs ?? this.#backoff(attempt));
+      attempt++;
     }
   }
 
@@ -359,12 +361,14 @@ async function toApiError(res: Response): Promise<PulseApiError> {
     // non-JSON error body
   }
   const retryAfter = res.headers.get("retry-after");
-  const seconds = retryAfter === null ? NaN : Number(retryAfter);
+  const delay = retryAfter === null ? NaN : /^\d+$/.test(retryAfter)
+    ? Number(retryAfter) * 1_000
+    : Math.max(0, Date.parse(retryAfter) - Date.now());
   return new PulseApiError(
     res.status,
     typeof body.code === "string" ? body.code : `HTTP_${res.status}`,
     typeof body.message === "string" ? body.message : res.statusText,
     body.details && typeof body.details === "object" ? (body.details as Record<string, unknown>) : undefined,
-    Number.isFinite(seconds) ? Math.max(0, seconds) * 1000 : undefined,
+    Number.isFinite(delay) ? delay : undefined,
   );
 }

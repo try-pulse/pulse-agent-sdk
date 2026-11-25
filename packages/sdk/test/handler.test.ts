@@ -110,6 +110,7 @@ test("a stop prompt sets isStop and aborts the session's signal first", async ()
     );
   const text = prompt("p1", {});
   h.handle(text.raw, text.headers);
+  await h.idle();
   const stop = prompt("p2", { signal: "stop" }, session({ state: "stopping", end_reason: "stopped" }));
   h.handle(stop.raw, stop.headers);
   await h.idle();
@@ -120,6 +121,81 @@ test("a stop prompt sets isStop and aborts the session's signal first", async ()
   assert.equal(seen[1]?.aborted, true);
   assert.deepEqual(seen[1]?.cause, { kind: "stop_signal", endReason: "stopped" });
   assert.equal(createdSignal?.aborted, true, "the created run's signal is the same one, now aborted");
+});
+
+test("resource retries are deduplicated per installation without an event ID", async () => {
+  const calls: string[] = [];
+  const h = createWebhookHandler({ secret: SECRET, now, onData: (event) => calls.push(event.installation_id) });
+  const resource = envelope({ type: "Issue", action: "update", data: { id: "issue" } });
+  for (const retry of [resource, { ...resource, webhook_timestamp: NOW + 1 }, { ...resource, installation_id: "other" }]) {
+    const delivery = signed(retry);
+    h.handle(delivery.raw, delivery.headers);
+  }
+  await h.idle();
+  assert.deepEqual(calls.sort(), ["inst1", "other"]);
+});
+
+test("a slow Stop claim fences older prompts and only a later occurrence reopens work", async () => {
+  const claimed = deferred();
+  const release = deferred();
+  const stopCallback = deferred();
+  const newerCallback = deferred();
+  const seen: string[] = [];
+  const h = createWebhookHandler({
+    secret: SECRET, now,
+    dedupe: { async claim(key) {
+      if (JSON.parse(key)[1] === "stop") { claimed.resolve(); await release.promise; }
+      return true;
+    } },
+    async onSessionPrompted(event, context) {
+      seen.push(event.data.event_id);
+      if (context.isStop) await stopCallback.promise;
+      if (event.data.event_id === "new") newerCallback.resolve();
+    },
+  });
+  function deliver(id: string, milliseconds: number, stop = false) {
+    const { raw, headers } = signed(envelope({ action: "prompted", created_at: new Date(NOW + milliseconds).toISOString() }, {
+      event_id: id, agent_activity: { signal: stop ? "stop" : null },
+    }));
+    assert.equal(h.handle(raw, headers).status, 200);
+  }
+  deliver("stop", 2, true);
+  await claimed.promise;
+  deliver("older", 1);
+  deliver("tie", 2);
+  deliver("new", 3);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(seen, []);
+  release.resolve();
+  await newerCallback.promise;
+  stopCallback.resolve();
+  await h.idle();
+  deliver("late-stop", 1, true);
+  deliver("late-work", 1);
+  await h.idle();
+  assert.deepEqual(seen, ["stop", "new"]);
+  assert.equal(h.stops.isStopped("sess_1"), false);
+});
+
+test("a Stop delivered after work one millisecond newer cannot abort it; an exact tie stops it", async () => {
+  const seen: string[] = [];
+  const h = createWebhookHandler({
+    secret: SECRET, now,
+    onSessionPrompted: (event) => { seen.push(event.data.event_id); },
+  });
+  for (const [id, time, stop] of [
+    ["work", "2026-09-25T09:12:03.121Z", false],
+    ["older-stop", "2026-09-25T09:12:03.120Z", true],
+    ["tied-stop", "2026-09-25T09:12:03.121Z", true],
+  ] as const) {
+    const delivery = signed(envelope({ action: "prompted", created_at: time }, {
+      event_id: id, agent_activity: { signal: stop ? "stop" : null },
+    }));
+    assert.equal(h.handle(delivery.raw, delivery.headers).status, 200);
+    await h.idle();
+    assert.equal(h.stops.isStopped("sess_1"), id === "tied-stop");
+  }
+  assert.deepEqual(seen, ["work", "tied-stop"]);
 });
 
 test("OAuthApp revoked stops every session of that installation", async () => {

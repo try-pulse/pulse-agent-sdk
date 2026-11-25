@@ -132,6 +132,16 @@ test("a 401 forces one token refresh; INSTALLATION_REVOKED does not", async () =
   assert.equal(revoked.calls.length, 1);
 });
 
+test("a forced token refresh leaves the activity retry budget available", async () => {
+  const { c, calls } = client([
+    json(401, { code: "UNAUTHORIZED" }),
+    json(429, {}, { "Retry-After": "0" }),
+    json(201, { id: "activity" }),
+  ], { maxRetries: 1 });
+  await c.respond("sess_1", "Done", { idempotencyKey: "stable-key" });
+  assert.deepEqual(calls.map((call) => call.headers.get("Idempotency-Key")), ["stable-key", "stable-key", "stable-key"]);
+});
+
 test("activities() pages with the server's last_seq through seq gaps", async () => {
   const { c, calls } = client([
     json(200, { data: [activity(3), activity(9)], has_more: true, last_seq: 9 }),

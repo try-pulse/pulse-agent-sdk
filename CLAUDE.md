@@ -13,6 +13,7 @@ shapes of its own.
 | `specs/` | SDK-scoped pulse-api snapshot, pulse-agent `agent-sessions.yaml`, manifest JSON Schema. `SOURCES.md` records revisions. |
 | `packages/sdk/` | `@try-pulse/agent-sdk` — zero runtime dependencies (node:crypto + fetch) |
 | `packages/sdk/src/generated/` | Types generated from `specs/`. **Never edit.** |
+| `fixtures/` | Webhook test vectors mirrored by the standalone Python SDK |
 | `scripts/` | Contract extraction/checks, type generation, manifest schema validation, packed consumer smoke test |
 
 The samples live in their own repositories, `try-pulse/pulse-agent-scout` and
@@ -46,8 +47,10 @@ and do not talk to a real Pulse environment.
   verified bytes, freshness from the signed body `webhook_timestamp` (±60 s). The
   `Pulse-Timestamp` header is unsigned and must never be read.
 - **The handler acknowledges first.** `handle()` returns 200 synchronously after verification;
-  dedupe on `data.event_id` and the callbacks run on a later tick. Never await a callback before
+  claim installation-scoped occurrence keys and run callbacks on a later tick. Never await a callback before
   answering — Pulse gives the webhook 5 s.
+- **The durable receiver waits for the inbox commit.** In both SDKs, receiver mode verifies
+  and calls an idempotent enqueue port before the caller can return success.
 - **Stop handling lives in `src/stop.ts` only.** Two paths, both final: `prompted` with
   `agent_activity.signal === "stop"` (abort, then one final response/error), and
   `409 SESSION_ENDED` on any write (abort, post nothing, never retry). Uninstall, team removal

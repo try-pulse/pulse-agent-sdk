@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { occurrenceKey } from "./receiver.js";
 import { MemoryDedupeStore, type DedupeStore } from "./dedupe.js";
 import { SessionStops, isStopPrompt } from "./stop.js";
 import type {
@@ -28,6 +29,8 @@ export type WebhookHandlerOptions = {
   now?: () => number;
   /** Default: bounded in-memory store. */
   dedupe?: DedupeStore;
+  /** Maximum distinct sessions whose delivery order is retained for 24 hours. */
+  maxOrderedSessions?: number;
   /** Default: a private instance. Share it with PulseAgentClient so 409s abort work too. */
   stops?: SessionStops;
   onSessionCreated?: (event: AgentSessionCreatedEvent, ctx: SessionContext) => unknown;
@@ -59,22 +62,34 @@ export type WebhookHandler = {
 };
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const ORDER_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+type SessionOrder = {
+  latestWork: number;
+  stopAt: number;
+  pendingStops: Set<Promise<void>>;
+  pending: number;
+};
 
 /**
  * Receives app webhooks. Order is fixed: verify → answer 200 → (asynchronously) dedupe on
- * `data.event_id` → dispatch. Pulse gives the webhook 5 seconds; the callbacks never hold
+ * an installation-scoped occurrence key → dispatch. Pulse gives the webhook 5 seconds; the callbacks never hold
  * the response.
  */
 export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHandler {
   const dedupe = options.dedupe ?? new MemoryDedupeStore();
   const stops = options.stops ?? new SessionStops();
   const inflight = new Set<Promise<void>>();
+  const sessionOrder = new Map<string, SessionOrder>();
+  const idleExpiry = new Map<string, number>();
+  const limit = options.maxOrderedSessions ?? 10_000;
+  if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError("maxOrderedSessions must be positive");
   const onError =
     options.onError ??
     ((err: unknown, event: AppWebhookEnvelope) =>
       console.error("pulse webhook callback failed", { type: event.type, action: event.action, err }));
 
-  async function dispatch(event: AppWebhookEnvelope): Promise<void> {
+  async function dispatch(event: AppWebhookEnvelope, order?: SessionOrder, settleStop?: () => void): Promise<void> {
     if (event.type === "Ping") {
       // No installation and no event_id; Pulse never retries a Ping, so nothing to dedupe.
       await options.onPing?.(event as PingEvent);
@@ -83,8 +98,27 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
     if (!event.installation_id || !event.app_user_id) {
       throw new Error(`pulse webhook ${event.type}/${event.action} without installation_id/app_user_id`);
     }
-    const eventId = (event.data as { event_id?: unknown } | undefined)?.event_id;
-    if (typeof eventId === "string" && !(await dedupe.claim(eventId))) return;
+    if (!(await dedupe.claim(JSON.stringify([event.installation_id, occurrenceKey(event)])))) return;
+
+    if (order) {
+      const timestamp = typeof event.created_at === "string" && /(?:Z|[+-]\d\d:\d\d)$/i.test(event.created_at)
+        ? Date.parse(event.created_at) : NaN;
+      const isStop = event.action === "prompted" && isStopPrompt((event as AgentSessionPromptedEvent).data);
+      if (isStop) {
+        const stopAt = Number.isFinite(timestamp) ? timestamp : Infinity;
+        if (stopAt <= order.stopAt) return;
+        order.stopAt = stopAt;
+        if (stopAt < order.latestWork) return;
+      } else {
+        // A slow asynchronous dedupe store must not allow old work past an admitted Stop.
+        while (order.pendingStops.size) await Promise.all(order.pendingStops);
+        if (order.stopAt > -Infinity && (
+          !Number.isFinite(timestamp) || timestamp <= order.stopAt ||
+          (event.action !== "prompted" && order.latestWork <= order.stopAt)
+        )) return;
+        if (Number.isFinite(timestamp)) order.latestWork = Math.max(order.latestWork, timestamp);
+      }
+    }
 
     if (event.type === "AgentSessionEvent" && event.action === "created") {
       const e = event as AgentSessionCreatedEvent;
@@ -96,6 +130,7 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
       const isStop = isStopPrompt(e.data);
       if (isStop) {
         stops.stop(sessionId, { kind: "stop_signal", endReason: e.data.agent_session.end_reason });
+        settleStop?.();
       } else {
         stops.resume(sessionId);
       }
@@ -110,12 +145,47 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
     }
   }
 
-  function schedule(event: AppWebhookEnvelope): void {
+  function schedule(event: AppWebhookEnvelope): boolean {
+    let order: SessionOrder | undefined;
+    let settleStop: (() => void) | undefined;
+    const data = event.data as Partial<AgentSessionPromptedEvent["data"]> | undefined;
+    const sessionId = event.type === "AgentSessionEvent" && (event.action === "created" || event.action === "prompted")
+      ? data?.agent_session?.id : undefined;
+    if (typeof sessionId === "string") {
+      const now = performance.now();
+      for (const [id, expiry] of idleExpiry) {
+        if (expiry > now) break;
+        idleExpiry.delete(id);
+        sessionOrder.delete(id);
+      }
+      order = sessionOrder.get(sessionId);
+      if (!order) {
+        if (sessionOrder.size >= limit) return false;
+        order = { latestWork: -Infinity, stopAt: -Infinity, pending: 0, pendingStops: new Set() };
+        sessionOrder.set(sessionId, order);
+      }
+      idleExpiry.delete(sessionId);
+      order.pending++;
+      if (event.action === "prompted" && data?.agent_activity?.signal === "stop") {
+        let resolve!: () => void;
+        const done = new Promise<void>((r) => { resolve = r; });
+        const waiting = order.pendingStops;
+        waiting.add(done);
+        settleStop = () => { waiting.delete(done); resolve(); };
+      }
+    }
     const run = new Promise<void>((resolve) => setImmediate(resolve))
-      .then(() => dispatch(event))
+      .then(() => dispatch(event, order, settleStop))
+      .finally(() => settleStop?.())
       .catch((err: unknown) => onError(err, event))
-      .finally(() => inflight.delete(run));
+      .finally(() => {
+        if (order && sessionId && --order.pending === 0) {
+          idleExpiry.set(sessionId, performance.now() + ORDER_RETENTION_MS);
+        }
+        inflight.delete(run);
+      });
     inflight.add(run);
+    return true;
   }
 
   function handle(rawBody: Uint8Array | ArrayBuffer | string, headers: HeaderSource): HandleResult {
@@ -128,7 +198,7 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
       const status = verified.reason === "invalid_json" ? 400 : 401;
       return { status, body: { ok: false, error: verified.reason } };
     }
-    schedule(verified.payload);
+    if (!schedule(verified.payload)) return { status: 503, body: { ok: false, error: "session_order_capacity" } };
     return { status: 200, body: { ok: true } };
   }
 

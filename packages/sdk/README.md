@@ -98,7 +98,11 @@ for a follow-up or Stop. Use the raw request body for webhook verification. `Pul
 is lowercase hex HMAC-SHA256 over those bytes with the full `pwhsec_…` secret, without a
 `sha256=` prefix. The SDK checks the **signed body** `webhook_timestamp` within 60 seconds; the
 `Pulse-Timestamp` header is not signed. The handler returns 200 after verification and
-dispatches callbacks asynchronously, deduplicating by `data.event_id`. Acknowledge each
+dispatches callbacks asynchronously. It deduplicates per installation by event ID or, for
+resource events without an ID, a hash of the signed occurrence fields. A Stop fences work
+at or before its signed creation time. Only a later prompt can reopen the session. The
+callback handler retains idle ordering records for 24 hours and returns 503 when its
+`maxOrderedSessions` budget is full. Acknowledge each
 delivery within 5 seconds and post a first `thought` or external URL within 10 seconds of
 `created`. A session left in `pending` or `active` for 30 minutes with no activity from the
 app becomes `stale`; posting any activity recovers it. Callbacks should observe their

@@ -1,0 +1,75 @@
+name: Compare upstream SDK contracts
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "29 6 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    if: >-
+      github.repository == 'try-pulse/pulse-agent-sdk' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.PULSE_UPSTREAM_CHECK_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    environment: upstream-contracts
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [main, staging]
+    steps:
+      - name: Check upstream configuration
+        env:
+          API_REPOSITORY: ${{ vars.PULSE_API_CONTRACT_REPO }}
+          AGENT_REPOSITORY: ${{ vars.PULSE_AGENT_CONTRACT_REPO }}
+          READ_TOKEN: ${{ secrets.PULSE_UPSTREAM_READ_TOKEN }}
+        run: |
+          if [[ -z "$API_REPOSITORY" || -z "$AGENT_REPOSITORY" || -z "$READ_TOKEN" ]]; then
+            echo "::error::Configure the two contract repository variables and the upstream-contracts environment token. See CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "::add-mask::$API_REPOSITORY"
+          echo "::add-mask::$AGENT_REPOSITORY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.23.4"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Read API contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.PULSE_API_CONTRACT_REPO }}
+          token: ${{ secrets.PULSE_UPSTREAM_READ_TOKEN }}
+          ref: ${{ matrix.upstream }}
+          path: upstream/api
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /docs/openapi/bundled.yaml
+            /docs/openapi/schemas/agent-app-manifest.schema.json
+      - name: Read agent session contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.PULSE_AGENT_CONTRACT_REPO }}
+          token: ${{ secrets.PULSE_UPSTREAM_READ_TOKEN }}
+          ref: ${{ matrix.upstream }}
+          path: upstream/agent
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /docs/openapi/agent-sessions.yaml
+      - name: Compare public snapshots with upstream
+        env:
+          PULSE_API_DIR: upstream/api
+          PULSE_AGENT_DIR: upstream/agent
+        run: |
+          # YAML parse errors may include source excerpts. Keep them out of public CI logs.
+          if ! npm run specs:sync -- --check >/dev/null 2>&1; then
+            echo "::error::The snapshots differ or an upstream contract could not be compared. Run the documented local comparison to inspect the change."
+            exit 1
+          fi

@@ -61,6 +61,7 @@ async function tokenRequest(config: OAuthClientConfig, form: Record<string, stri
   const basic = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64");
   const res = await doFetch(`${trimSlash(config.baseUrl ?? DEFAULT_BASE_URL)}/oauth/token`, {
     method: "POST",
+    redirect: "manual",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
       accept: "application/json",
@@ -107,11 +108,13 @@ export function refreshTokens(config: OAuthClientConfig, refreshToken: string): 
 /** `POST /oauth/revoke`; Pulse always answers 200. */
 export async function revokeToken(config: OAuthClientConfig, token: string): Promise<void> {
   const doFetch = config.fetch ?? fetch;
-  await doFetch(`${trimSlash(config.baseUrl ?? DEFAULT_BASE_URL)}/oauth/revoke`, {
+  const res = await doFetch(`${trimSlash(config.baseUrl ?? DEFAULT_BASE_URL)}/oauth/revoke`, {
     method: "POST",
+    redirect: "manual",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ client_id: config.clientId, token }),
   });
+  if (!res.ok) throw new OAuthError(res.status, "revoke_failed");
 }
 
 /** Constant-time comparison for the install secret guarding your install endpoint. */
