@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { InstallationRevokedError, PulseApiError } from "./errors.js";
 import { DEFAULT_BASE_URL, trimSlash } from "./oauth.js";
 import { SessionEndedError, type SessionStops } from "./stop.js";
-import type { TokenProvider } from "./tokens.js";
+import type { TokenManager, TokenProvider } from "./tokens.js";
 import type {
   ActionContent,
   AgentActivity,
@@ -12,6 +12,7 @@ import type {
   AgentSessionPage,
   AgentSessionState,
   AgentSessionUpdate,
+  AppWebhookEnvelope,
   AppIssueStatus,
   AuthSignalMetadata,
   ExternalUrl,
@@ -100,6 +101,28 @@ export class PulseAgentClient {
     this.#o = options;
     this.baseUrl = trimSlash(options.baseUrl ?? DEFAULT_BASE_URL);
     this.workspaceId = options.workspaceId;
+  }
+
+  /** Bind a verified event to its active installation and app principal. */
+  static async forEvent(
+    tokens: TokenManager,
+    event: AppWebhookEnvelope,
+    options: Omit<PulseAgentClientOptions, "workspaceId" | "tokenProvider" | "baseUrl"> = {},
+  ): Promise<PulseAgentClient> {
+    const installationId = event.installation_id;
+    if (!installationId || (event.type === "OAuthApp" && event.action === "revoked")) {
+      throw new Error("This Pulse event does not authorize an app client");
+    }
+    const installation = await tokens.record(installationId);
+    if (installation.workspace_id !== event.workspace_id || installation.app_user_id !== event.app_user_id) {
+      throw new Error("Pulse event does not match the active installation");
+    }
+    return new PulseAgentClient({
+      ...options,
+      baseUrl: tokens.apiBaseUrl,
+      workspaceId: installation.workspace_id,
+      tokenProvider: (input) => tokens.getAccessToken(installationId, input),
+    });
   }
 
   readonly sessions = {
